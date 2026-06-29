@@ -23,10 +23,41 @@ import traceback
 import runpod
 
 # modulos_virales/ está al mismo nivel que handler.py dentro del contenedor
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "modulos_virales"))
+_RAIZ = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(_RAIZ, "modulos_virales"))
 
 MAX_CLIPS   = 8
 MAX_DUR_SEG = 1200  # 20 minutos
+
+# ── Cookies de YouTube ────────────────────────────────────────────────────────
+
+def _setup_cookies() -> str:
+    """
+    Devuelve la ruta al archivo de cookies que usará yt-dlp.
+
+    Prioridad:
+      1. YOUTUBE_COOKIES (variable de entorno) → escribe llave.txt en la raíz del proyecto.
+         Usar en RunPod: pega todo el contenido del archivo en esa variable de entorno.
+      2. llave.txt ya existe en el disco → úsalo directamente (modo desarrollo local).
+      3. Ninguno → devuelve la ruta esperada de todas formas; yt-dlp fallará con un error claro.
+    """
+    cookies_path = os.path.join(_RAIZ, "llave.txt")
+    env_cookies  = os.environ.get("YOUTUBE_COOKIES", "").strip()
+
+    if env_cookies:
+        with open(cookies_path, "w", encoding="utf-8") as f:
+            f.write(env_cookies)
+        print(f"🔑 Cookies escritas desde YOUTUBE_COOKIES → {cookies_path} ({len(env_cookies)} bytes)")
+    elif os.path.exists(cookies_path):
+        print(f"🔑 Usando llave.txt local: {cookies_path} ({os.path.getsize(cookies_path)} bytes)")
+    else:
+        print("⚠️  No hay cookies: define YOUTUBE_COOKIES en RunPod o crea llave.txt localmente")
+
+    return cookies_path
+
+
+# Ejecutar al arrancar el worker (antes de cualquier job)
+_setup_cookies()
 
 
 def _duracion_video(url: str) -> float | None:
