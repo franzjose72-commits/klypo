@@ -1,0 +1,45 @@
+# ── Secretos — NUNCA subir ────────────────────────────────────────────────────
+.env
+llave.txt
+llave.txt.txt
+
+# ── Entorno virtual ───────────────────────────────────────────────────────────
+venv/
+.venv/
+
+# ── Clips generados (pueden ser GB) ──────────────────────────────────────────
+CLIPS_VIRAL_*/
+CLIPS_KLYPO_*/
+
+# ── Videos descargados ───────────────────────────────────────────────────────
+viral_download.*
+video_descargado.*
+test_video.mp4
+
+# ── Temporales de MoviePy / ffmpeg / render ───────────────────────────────────
+*TEMP_MPY_wvf_snd.mp3
+*_baseTEMP_MPY_wvf_snd.mp3
+*_base.mp4
+*_sub.mp4
+*.ass
+temp_*
+*.wav
+
+# ── Audio suelto ─────────────────────────────────────────────────────────────
+*.mp3
+*.mpeg
+
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# ── IDEs ─────────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+
+# ── Misc ─────────────────────────────────────────────────────────────────────
+*.zip
+metadata.json

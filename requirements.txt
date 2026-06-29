@@ -1,0 +1,36 @@
+# ── Web API ───────────────────────────────────────────────────────────────────
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.0.0
+
+# ── Video / Audio ─────────────────────────────────────────────────────────────
+moviepy>=2.0.0
+opencv-python>=4.8.0
+numpy>=1.24.0
+scipy>=1.10.0
+
+# ── Detección facial ──────────────────────────────────────────────────────────
+mediapipe>=0.10.0
+
+# ── IA / Transcripción ───────────────────────────────────────────────────────
+groq>=1.0.0
+assemblyai>=0.17.0
+openai>=1.0.0
+
+# ── Diarización de voz (módulo podcasts) ─────────────────────────────────────
+pyannote.audio>=3.1.0
+# IMPORTANTE para RunPod (GPU NVIDIA) — instalar torch con CUDA por separado:
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
+# En desarrollo local CPU:
+#   pip install torch==2.1.0 torchaudio==2.1.0
+
+# ── Imagen / Fuentes ──────────────────────────────────────────────────────────
+Pillow>=10.0.0
+fonttools>=4.0.0
+
+# ── Descarga de YouTube ───────────────────────────────────────────────────────
+yt-dlp>=2023.11.0
+
+# ── Utilidades ────────────────────────────────────────────────────────────────
+python-dotenv>=1.0.0
+requests>=2.28.0
