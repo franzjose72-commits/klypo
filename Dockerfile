@@ -32,24 +32,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# ── PyTorch 2.7 con CUDA 12.8 — DEBE IR ANTES que requirements.txt ───────────
-# Razón: pyannote.audio tiene torch como dependencia; si pip lo resuelve solo
-# puede bajar una versión CPU o incompatible. Al instalarlo primero, pip lo
-# respeta y no lo sobreescribe al instalar pyannote ni ningún otro paquete.
+# ── Resto de dependencias Python — VA PRIMERO ─────────────────────────────────
+# pyannote.audio arrastra torch como dependencia transitiva. Si torch se
+# instala antes, pip lo pisa al resolver pyannote con un build de PyPI sin
+# kernels sm_120. Por eso requirements.txt se instala primero...
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# ── PyTorch 2.7 con CUDA 12.8 — VA AL FINAL, fuerza el build correcto ────────
+# ...y luego reinstalamos torch cu128 ENCIMA con --force-reinstall, así queda
+# como el build realmente activo y nada lo vuelve a sobreescribir después.
 #
 # cu128 incluye kernels compilados para:
-#   sm_120 (Blackwell)  ← la que faltaba con cu118
+#   sm_120 (Blackwell)  ← la que faltaba (pyannote bajaba un build sin esto)
 #   sm_90  (Hopper)
 #   sm_89  (Ada Lovelace)
 #   sm_86/sm_80 (Ampere)
-RUN pip install --no-cache-dir \
+RUN pip install --no-cache-dir --force-reinstall \
     torch==2.7.0 \
     torchaudio==2.7.0 \
     --index-url https://download.pytorch.org/whl/cu128
 
-# ── Resto de dependencias Python ──────────────────────────────────────────────
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# ── Verificación en build: confirma que sm_120 está en la lista ──────────────
+RUN python -c "import torch; print('torch', torch.__version__); print('arch_list', torch.cuda.get_arch_list())"
 
 # ── Código de la aplicación ───────────────────────────────────────────────────
 COPY modulos_virales/ ./modulos_virales/
