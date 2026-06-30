@@ -1,7 +1,7 @@
 # KLYPO — RunPod Serverless
 # CUDA 12.8 + PyTorch 2.7 → soporta GPUs Blackwell sm_120 (RTX PRO 6000, B200, B100)
 # También compatible con Hopper sm_90, Ampere sm_86/sm_80, Ada sm_89
-FROM nvidia/cuda:12.8.1-cudnn9-devel-ubuntu22.04
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
