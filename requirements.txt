@@ -20,7 +20,8 @@ openai>=1.0.0
 # ── Diarización de voz (módulo podcasts) ─────────────────────────────────────
 pyannote.audio>=3.1.0
 # IMPORTANTE para RunPod (GPU NVIDIA) — instalar torch con CUDA por separado:
-#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
+#   pip install torch==2.7.0 torchaudio==2.7.0 --index-url https://download.pytorch.org/whl/cu128
+# cu128 soporta Blackwell sm_120, Hopper sm_90, Ampere sm_86/sm_80
 # En desarrollo local CPU:
 #   pip install torch==2.1.0 torchaudio==2.1.0
 

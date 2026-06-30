@@ -1,58 +1,73 @@
 # KLYPO — RunPod Serverless
-# Base: imagen oficial RunPod con PyTorch 2.1 + CUDA 11.8 + Python 3.10
-FROM runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04
+# CUDA 12.8 + PyTorch 2.7 → soporta GPUs Blackwell sm_120 (RTX PRO 6000, B200, B100)
+# También compatible con Hopper sm_90, Ampere sm_86/sm_80, Ada sm_89
+FROM nvidia/cuda:12.8.1-cudnn9-devel-ubuntu22.04
 
-# ── Dependencias de sistema ───────────────────────────────────────────────────
+ENV DEBIAN_FRONTEND=noninteractive
+
+# ── Sistema: Python 3.11 + herramientas de video/audio/fuentes ───────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    # Video / audio
+    python3.11 \
+    python3.11-dev \
+    python3-pip \
+    # Video
     ffmpeg \
+    # Audio (scipy, pyannote)
     libsndfile1 \
     # OpenCV
     libgl1-mesa-glx \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
-    # Subtítulos / fuentes (libass usa fontconfig para buscar TTFs)
+    # Subtítulos: libass busca fuentes vía fontconfig
     libfontconfig1 \
     fontconfig \
     # Utilidades
     git \
     curl \
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
+    && update-alternatives --install /usr/bin/python  python  /usr/bin/python3.11 1 \
+    && python -m pip install --upgrade pip \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# ── Dependencias Python ───────────────────────────────────────────────────────
+# ── PyTorch 2.7 con CUDA 12.8 — DEBE IR ANTES que requirements.txt ───────────
+# Razón: pyannote.audio tiene torch como dependencia; si pip lo resuelve solo
+# puede bajar una versión CPU o incompatible. Al instalarlo primero, pip lo
+# respeta y no lo sobreescribe al instalar pyannote ni ningún otro paquete.
+#
+# cu128 incluye kernels compilados para:
+#   sm_120 (Blackwell)  ← la que faltaba con cu118
+#   sm_90  (Hopper)
+#   sm_89  (Ada Lovelace)
+#   sm_86/sm_80 (Ampere)
+RUN pip install --no-cache-dir \
+    torch==2.7.0 \
+    torchaudio==2.7.0 \
+    --index-url https://download.pytorch.org/whl/cu128
+
+# ── Resto de dependencias Python ──────────────────────────────────────────────
 COPY requirements.txt .
-
-# 1. Instalar paquetes del requirements.txt (sin torch — lo especificamos con CUDA abajo)
 RUN pip install --no-cache-dir -r requirements.txt
-
-# 2. PyTorch con CUDA 11.8 (reemplaza cualquier versión CPU que haya entrado)
-RUN pip install --no-cache-dir --force-reinstall \
-    torch==2.1.0 \
-    torchaudio==2.1.0 \
-    --index-url https://download.pytorch.org/whl/cu118
-
-# 3. RunPod Serverless SDK
-RUN pip install --no-cache-dir runpod>=1.5.0
 
 # ── Código de la aplicación ───────────────────────────────────────────────────
 COPY modulos_virales/ ./modulos_virales/
 COPY fonts/           ./fonts/
 COPY handler.py       .
 
-# .env NO se copia — las variables de entorno se configuran en el panel de RunPod:
-#   GROQ_API_KEY, HF_TOKEN, OPENAI_API_KEY, ASSEMBLYAI_API_KEY, PEXELS_API_KEY
-#
-# llave.txt (cookies de YouTube) NO se copia — si tu contenido de YouTube lo requiere,
-# monta un volumen de red en RunPod y ajusta la ruta en motor_viral.py:
-#   cookies = os.getenv("COOKIES_PATH", "/runpod-volume/llave.txt")
+# Variables de entorno — configurar en el panel de RunPod, NO en el contenedor:
+#   GROQ_API_KEY        — Llama (detección de clips) + Whisper (b-roll)
+#   ASSEMBLYAI_API_KEY  — transcripción con timestamps de palabras
+#   HF_TOKEN            — pyannote.audio (diarización, módulo podcasts)
+#   OPENAI_API_KEY      — fallback transcripción podcasts
+#   PEXELS_API_KEY      — b-roll automático
+#   YOUTUBE_COOKIES     — contenido de llave.txt para descargar videos privados/con edad
 
-# Caché de modelos HuggingFace (pyannote) dentro del contenedor para no re-descargar
+# Caché HuggingFace persistente dentro del contenedor
+# (en RunPod usar Network Volume montado en /app/.cache para no re-descargar modelos)
 ENV HF_HOME=/app/.cache/huggingface
 ENV TRANSFORMERS_CACHE=/app/.cache/huggingface
 
-# ── Arranque ──────────────────────────────────────────────────────────────────
-# -u: sin buffer en stdout → logs visibles en tiempo real en RunPod
+# -u desactiva el buffer de stdout → logs visibles en tiempo real en RunPod
 CMD ["python", "-u", "handler.py"]
