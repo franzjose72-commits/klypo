@@ -74,18 +74,20 @@ def _obtener_video(fuente):
     cmd = [
         "yt-dlp", "--cookies", cookies,
         "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4",
-        "-o", output, "--no-playlist", fuente,
+        "-o", output, "--no-playlist",
+        "--extractor-args", "youtube:player_client=android,web",
+        "--verbose",
+        fuente,
     ]
     try:
-        resultado = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        resultado = subprocess.run(cmd, check=True, text=True,
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         archivos = glob.glob(os.path.join(raiz, "viral_download.*"))
         return archivos[0] if archivos else None
     except subprocess.CalledProcessError as e:
+        salida = (e.output or "").strip()
         print(f"❌ Descarga fallida (exit {e.returncode})")
-        if e.stderr:
-            print(f"🔧 yt-dlp stderr:\n{e.stderr.strip()}")
-        if e.stdout:
-            print(f"🔧 yt-dlp stdout:\n{e.stdout.strip()}")
+        print(f"🔧 yt-dlp output:\n{salida if salida else '(vacío)'}")
         return None
     except Exception as e:
         print(f"❌ Descarga fallida: {e}")
