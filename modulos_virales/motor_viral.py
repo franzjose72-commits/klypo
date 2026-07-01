@@ -146,9 +146,12 @@ def procesar_viral(url, fuente_sub="Arial", mayusculas=False, modo_sub="bloques"
     Recibe parámetros directamente y devuelve lista de rutas absolutas de los clips.
     Llamada tanto desde ejecutar_viral() (terminal) como desde api.py (web).
     """
-    video_path = _obtener_video(url)
+    try:
+        video_path = _obtener_video(url)
+    except ValueError:
+        raise  # ya trae el detalle de yt-dlp — propaga sin modificar
     if not video_path:
-        raise ValueError("No se pudo obtener el video")
+        raise ValueError("No se pudo obtener el video: yt-dlp no genero archivo de salida (el video puede requerir autenticacion o estar restringido)")
 
     video    = mpy.VideoFileClip(video_path)
     duracion = video.duration
