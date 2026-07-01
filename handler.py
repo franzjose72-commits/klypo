@@ -138,10 +138,22 @@ def handler(event):
             print(f"⚠️ {len(rutas)} clips generados — limitando a {MAX_CLIPS}")
             rutas = rutas[:MAX_CLIPS]
 
-        print(f"✅ {len(rutas)} clips listos")
+        # Subir a R2 y reemplazar rutas locales por URLs descargables
+        from subir_r2 import subir_clip_r2
+        clips_resultado = []
+        for ruta in rutas:
+            nombre = os.path.basename(ruta)
+            url = subir_clip_r2(ruta, nombre)
+            clips_resultado.append({
+                "nombre": nombre,
+                "url":    url or "",       # URL de R2 o vacío si falló la subida
+                "local":  ruta,            # ruta en el contenedor (referencia)
+            })
+
+        print(f"✅ {len(clips_resultado)} clips listos")
         return {
-            "clips":       rutas,
-            "total_clips": len(rutas),
+            "clips":       clips_resultado,
+            "total_clips": len(clips_resultado),
         }
 
     except Exception as e:
