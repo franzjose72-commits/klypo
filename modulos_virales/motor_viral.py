@@ -73,7 +73,7 @@ def _obtener_video(fuente):
 
     cmd = [
         "yt-dlp", "--cookies", cookies,
-        "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4",
+        "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4/bv*+ba/b",
         "-o", output, "--no-playlist",
         "--extractor-args", "youtube:player_client=android,web",
         "--verbose",

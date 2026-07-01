@@ -25,10 +25,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Utilidades
     git \
     curl \
+    unzip \
     && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
     && update-alternatives --install /usr/bin/python  python  /usr/bin/python3.11 1 \
     && python -m pip install --upgrade pip \
     && rm -rf /var/lib/apt/lists/*
+
+# ── Deno — runtime JS que yt-dlp necesita para resolver el desafío "n" ────────
+RUN curl -fsSL https://deno.land/install.sh | sh
+ENV DENO_INSTALL="/root/.deno"
+ENV PATH="${DENO_INSTALL}/bin:${PATH}"
 
 WORKDIR /app
 
