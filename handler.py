@@ -69,7 +69,12 @@ def _duracion_video(url: str) -> float | None:
     """
     try:
         if url.startswith("http"):
-            cmd = ["yt-dlp", "--skip-download", "--print", "duration", "--no-warnings", url]
+            cmd = ["yt-dlp", "--skip-download", "--print", "duration", "--no-warnings"]
+            proxy_user = os.environ.get("PROXY_USER", "").strip()
+            proxy_pass = os.environ.get("PROXY_PASS", "").strip()
+            if proxy_user and proxy_pass:
+                cmd += ["--proxy", f"http://{proxy_user}:{proxy_pass}@gw.dataimpulse.com:823"]
+            cmd.append(url)
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
             if r.returncode == 0 and r.stdout.strip():
                 return float(r.stdout.strip())

@@ -71,6 +71,13 @@ def _obtener_video(fuente):
         try: os.remove(viejo)
         except: pass
 
+    proxy_user = os.environ.get("PROXY_USER", "").strip()
+    proxy_pass = os.environ.get("PROXY_PASS", "").strip()
+    proxy_args = ["--proxy", f"http://{proxy_user}:{proxy_pass}@gw.dataimpulse.com:823"] \
+                 if proxy_user and proxy_pass else []
+    if proxy_args:
+        print("🌐 Usando proxy residencial DataImpulse")
+
     cmd = [
         "yt-dlp", "--cookies", cookies,
         "-f", "bv*+ba/b",
@@ -78,6 +85,7 @@ def _obtener_video(fuente):
         "-o", output, "--no-playlist",
         "--extractor-args", "youtube:player_client=android,web",
         "--verbose",
+        *proxy_args,
         fuente,
     ]
     try:
