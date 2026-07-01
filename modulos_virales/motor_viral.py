@@ -81,18 +81,15 @@ def _obtener_video(fuente):
         fuente,
     ]
     try:
-        resultado = subprocess.run(cmd, check=True, text=True,
-                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        subprocess.run(cmd, check=True, text=True,
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         archivos = glob.glob(os.path.join(raiz, "viral_download.*"))
         return archivos[0] if archivos else None
     except subprocess.CalledProcessError as e:
         salida = (e.output or "").strip()
-        print(f"❌ Descarga fallida (exit {e.returncode})")
-        print(f"🔧 yt-dlp output:\n{salida if salida else '(vacío)'}")
-        return None
+        raise ValueError(f"No se pudo obtener el video. yt-dlp output:\n{salida[-1500:] if salida else '(vacio)'}")
     except Exception as e:
-        print(f"❌ Descarga fallida: {e}")
-        return None
+        raise ValueError(f"No se pudo obtener el video: {e}")
 
 
 
