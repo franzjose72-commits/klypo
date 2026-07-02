@@ -88,7 +88,8 @@ def _obtener_video(fuente):
         "-f", "bv*+ba/b",
         "--merge-output-format", "mp4",
         "-o", output, "--no-playlist",
-        "--extractor-args", "youtube:player_client=android,web",
+        "--extractor-args", "youtube:player_client=web,android",
+        "--extractor-args", "youtubepot-bgutilscript:server_home=/root/bgutil-ytdlp-pot-provider/server",
         "--verbose",
     ] + proxy_args + [fuente]
     try:
