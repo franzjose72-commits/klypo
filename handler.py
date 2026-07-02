@@ -148,10 +148,10 @@ def handler(event):
         clips_resultado = []
         for ruta in rutas:
             nombre = os.path.basename(ruta)
-            url = subir_clip_r2(ruta, nombre)
+            r2_url = subir_clip_r2(ruta, nombre)
             clips_resultado.append({
                 "nombre": nombre,
-                "url":    url or "",       # URL de R2 o vacío si falló la subida
+                "url":    r2_url or "",    # URL de R2 o vacío si falló la subida
                 "local":  ruta,            # ruta en el contenedor (referencia)
             })
 
