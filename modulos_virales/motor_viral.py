@@ -73,10 +73,15 @@ def _obtener_video(fuente):
 
     proxy_user = os.environ.get("PROXY_USER", "").strip()
     proxy_pass = os.environ.get("PROXY_PASS", "").strip()
-    proxy_args = ["--proxy", f"http://{proxy_user}:{proxy_pass}@gw.dataimpulse.com:823"] \
-                 if proxy_user and proxy_pass else []
-    if proxy_args:
+    print(f"🔍 PROXY_USER existe: {bool(proxy_user)}, PROXY_PASS existe: {bool(proxy_pass)}")
+
+    proxy_args = []
+    if proxy_user and proxy_pass:
+        proxy_url = f"http://{proxy_user}:{proxy_pass}@gw.dataimpulse.com:823"
+        proxy_args = ["--proxy", proxy_url]
         print("🌐 Usando proxy residencial DataImpulse")
+    else:
+        print("⚠️  Sin proxy — descargando sin proxy (puede ser bloqueado en datacenter)")
 
     cmd = [
         "yt-dlp", "--cookies", cookies,
@@ -85,9 +90,7 @@ def _obtener_video(fuente):
         "-o", output, "--no-playlist",
         "--extractor-args", "youtube:player_client=android,web",
         "--verbose",
-        *proxy_args,
-        fuente,
-    ]
+    ] + proxy_args + [fuente]
     try:
         subprocess.run(cmd, check=True, text=True,
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
