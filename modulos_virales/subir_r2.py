@@ -1,147 +1,223 @@
 """
 KLYPO - Subida de clips a Cloudflare R2
 
-Variables de entorno requeridas en RunPod:
-  R2_ACCESS_KEY_ID     - Access Key ID del token de API de R2
-  R2_SECRET_ACCESS_KEY - Secret Access Key del token de API de R2
+Variables requeridas en RunPod:
+  R2_ACCESS_KEY_ID     - Access Key ID del token API de R2
+  R2_SECRET_ACCESS_KEY - Secret Access Key del token API de R2
   R2_ENDPOINT          - https://<ACCOUNT_ID>.r2.cloudflarestorage.com
   R2_BUCKET            - nombre del bucket (ej: klypo-clips)
+
+Estrategia de subida — doble proteccion contra proxy:
+  1. boto3 genera la presigned PUT URL LOCALMENTE (firma criptografica, sin red)
+  2. requests.put() sube el archivo con proxies={"http": None, "https": None}
+     None explicito ignora HTTP_PROXY/HTTPS_PROXY aunque esten en el entorno.
+     Esto es diferente a "" (cadena vacia) que algunos clientes HTTP ignoran.
 """
 
 import os
 import glob
 import time
-import boto3
+import traceback
+
+import boto3.session as b3s
+import certifi
+import requests
 from botocore.config import Config
 
-# Variables de entorno de proxy que boto3 hereda y que rompen el SSL con R2.
-# El proxy residencial es SOLO para yt-dlp, nunca para R2.
+
+# Todas las variables de entorno que pueden desviar trafico HTTP/HTTPS por un proxy
 _PROXY_VARS = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
                "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy")
 
 
-def _crear_cliente_s3(access_key, secret_key, endpoint, bucket):
-    """Crea el cliente boto3 con conexion directa a R2, sin proxy."""
-    # 1. Elimina variables de proxy del entorno durante toda la operacion
-    guardadas = {v: os.environ.pop(v) for v in _PROXY_VARS if v in os.environ}
+# ── Diagnostico y gestion de proxy ───────────────────────────────────────────
 
-    # 2. NO_PROXY=* dice a urllib3 que bypasee el proxy para CUALQUIER host.
-    #    Esto cubre el caso donde RunPod inyecta el proxy a nivel de sistema
-    #    y botocore lo lee despues de crear el cliente.
+def _log_proxy_estado(tag: str):
+    """Imprime el estado real de cada variable de proxy en os.environ."""
+    presentes = {v: os.environ[v] for v in _PROXY_VARS if v in os.environ}
+    if presentes:
+        print(f"   ⚠️  [{tag}] Proxy vars ACTIVAS en entorno:")
+        for k, v in presentes.items():
+            print(f"         {k} = {v!r}")
+    else:
+        print(f"   ✅ [{tag}] Sin variables de proxy en el entorno")
+
+
+def _limpiar_proxy() -> dict:
+    """
+    Elimina todas las vars de proxy e inyecta NO_PROXY=*.
+    Devuelve el estado original para restaurar despues.
+    """
+    guardadas = {v: os.environ.pop(v) for v in _PROXY_VARS if v in os.environ}
     os.environ["NO_PROXY"] = "*"
     os.environ["no_proxy"] = "*"
-
-    try:
-        # 3. Sesion fresca — evita reutilizar cualquier estado cacheado de sesiones previas
-        import boto3.session as b3s
-        sesion = b3s.Session()
-        cliente = sesion.client(
-            "s3",
-            endpoint_url          = endpoint,
-            aws_access_key_id     = access_key,
-            aws_secret_access_key = secret_key,
-            region_name           = "auto",
-            config                = Config(
-                signature_version = "s3v4",
-                # Dict no-vacio (truthy): botocore lo usa en vez de caer al fallback de env vars.
-                # Strings vacias = sin proxy para http y https.
-                proxies = {"http": "", "https": ""},
-            ),
-        )
-        return cliente, guardadas
-    except Exception:
-        os.environ.pop("NO_PROXY", None)
-        os.environ.pop("no_proxy", None)
-        os.environ.update(guardadas)
-        raise
+    return guardadas
 
 
 def _restaurar_proxy(guardadas: dict):
-    # Primero elimina los NO_PROXY que inyectamos (si no estaban antes no deben quedar)
+    """Elimina los NO_PROXY que inyectamos y restaura el estado original."""
     os.environ.pop("NO_PROXY", None)
     os.environ.pop("no_proxy", None)
-    # Luego restaura todo lo que estaba originalmente (incluye NO_PROXY si existia)
     os.environ.update(guardadas)
 
 
-def _encontrar_archivo(ruta_esperada: str) -> str | None:
+# ── Utilidades de archivo ─────────────────────────────────────────────────────
+
+def _encontrar_archivo(ruta_esperada: str) -> "str | None":
     """
     Devuelve la ruta real del archivo aunque el nombre difiera levemente.
-    Primero intenta la ruta exacta; si no existe, busca por prefijo en el mismo directorio.
+    Primero la ruta exacta; si no existe, busca por prefijo de 30 chars.
     """
     if os.path.exists(ruta_esperada):
         return ruta_esperada
 
     directorio = os.path.dirname(ruta_esperada)
     nombre     = os.path.basename(ruta_esperada)
-
-    # Busca por los primeros 30 caracteres del nombre (antes de que los titulos difieran)
-    prefijo = nombre[:30]
-    patron  = os.path.join(directorio, prefijo + "*.mp4")
+    patron     = os.path.join(directorio, nombre[:30] + "*.mp4")
     candidatos = glob.glob(patron)
     if candidatos:
         encontrado = candidatos[0]
-        print(f"⚠️  Ruta exacta no hallada, usando: {os.path.basename(encontrado)}")
+        print(f"   ⚠️  Ruta exacta no hallada, usando: {os.path.basename(encontrado)}")
         return encontrado
 
-    print(f"❌ Archivo no encontrado en disco: {ruta_esperada}")
+    print(f"   ❌ Archivo no encontrado en disco: {ruta_esperada}")
     return None
 
 
-def subir_clip_r2(ruta_local: str, nombre_archivo: str) -> str | None:
+# ── Cliente boto3 (solo para firmar URLs localmente) ─────────────────────────
+
+def _crear_cliente_s3(access_key: str, secret_key: str, endpoint: str):
     """
-    Sube un clip a Cloudflare R2 y devuelve una URL firmada valida por 7 dias.
-    - Conexion directa sin proxy (el proxy es solo para yt-dlp).
-    - Si la ruta exacta no existe, intenta encontrar el archivo por prefijo.
-    - Reintenta hasta 3 veces si la subida falla.
-    - Devuelve None si falla definitivamente (no interrumpe el proceso).
+    Crea un cliente boto3 con sesion fresca.
+    La sesion se usa SOLO para generate_presigned_url (operacion local, sin red).
     """
-    access_key = os.environ.get("R2_ACCESS_KEY_ID", "").strip()
+    return b3s.Session().client(
+        "s3",
+        endpoint_url          = endpoint,
+        aws_access_key_id     = access_key,
+        aws_secret_access_key = secret_key,
+        region_name           = "auto",
+        config                = Config(
+            signature_version = "s3v4",
+            # Dict no-vacio (truthy): botocore lo usa directamente sin leer env vars.
+            # Strings vacias = sin proxy para http y https.
+            proxies = {"http": "", "https": ""},
+        ),
+    )
+
+
+# ── Subida con requests (red directa, sin proxy) ──────────────────────────────
+
+def _subir_con_requests(ruta_local: str, put_url: str) -> int:
+    """
+    Sube el archivo via HTTP PUT usando requests con proxies deshabilitados.
+
+    proxies={"http": None, "https": None} con None (no cadena vacia):
+      - None le dice a requests que ignore las vars de entorno para ese esquema.
+      - Garantiza conexion directa aunque HTTP_PROXY/HTTPS_PROXY esten activas.
+
+    Devuelve el HTTP status code (200 o 204 = exito en R2).
+    """
+    size_bytes = os.path.getsize(ruta_local)
+    print(f"   📦 Tamano: {size_bytes / 1_048_576:.1f} MB")
+
+    with open(ruta_local, "rb") as f:
+        resp = requests.put(
+            put_url,
+            data    = f,
+            headers = {"Content-Length": str(size_bytes)},
+            proxies = {"http": None, "https": None},
+            verify  = certifi.where(),
+            timeout = 300,
+        )
+
+    print(f"   📡 HTTP {resp.status_code}")
+    if resp.status_code not in (200, 204):
+        body = resp.text[:600] if resp.text else "(sin cuerpo)"
+        print(f"   ❌ Respuesta R2: {body}")
+
+    return resp.status_code
+
+
+# ── API publica ───────────────────────────────────────────────────────────────
+
+def subir_clip_r2(ruta_local: str, nombre_archivo: str) -> "str | None":
+    """
+    Sube un clip a Cloudflare R2 y devuelve URL firmada valida 7 dias.
+    Devuelve None si falla (no interrumpe el procesamiento de otros clips).
+
+    Flujo:
+      1. Diagnotsico de proxy ANTES de limpiar (para ver que tenia el entorno)
+      2. Limpia vars de proxy + inyecta NO_PROXY=*
+      3. Diagnostico DESPUES de limpiar (confirma que quedaron limpias)
+      4. Crea cliente boto3 (sin red)
+      5. Genera presigned PUT URL (local, sin red, sin SSL)
+      6. Sube con requests + proxies=None (unica llamada de red)
+      7. Genera presigned GET URL (local, sin red)
+      8. Restaura vars de proxy para yt-dlp
+    """
+    access_key = os.environ.get("R2_ACCESS_KEY_ID",     "").strip()
     secret_key = os.environ.get("R2_SECRET_ACCESS_KEY", "").strip()
-    endpoint   = os.environ.get("R2_ENDPOINT", "").strip()
+    endpoint   = os.environ.get("R2_ENDPOINT",          "").strip()
     bucket     = os.environ.get("R2_BUCKET", "klypo-clips").strip()
 
-    if not all([access_key, secret_key, endpoint, bucket]):
-        print("⚠️  R2: faltan variables (R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT, R2_BUCKET)")
+    if not all([access_key, secret_key, endpoint]):
+        print("⚠️  R2: faltan R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_ENDPOINT")
         return None
 
-    # Localiza el archivo real en disco
     ruta_real = _encontrar_archivo(ruta_local)
     if not ruta_real:
         return None
 
-    # Usa el basename del archivo real como clave en R2
     clave_r2 = os.path.basename(ruta_real)
+    print(f"\n📤 R2 subida: {clave_r2}")
 
-    # Crea el cliente sin proxy
-    try:
-        s3, guardadas_proxy = _crear_cliente_s3(access_key, secret_key, endpoint, bucket)
-    except Exception as e:
-        print(f"❌ R2: no se pudo crear cliente boto3: {e}")
-        return None
+    # Diagnostico ANTES de tocar el entorno
+    _log_proxy_estado("ANTES-limpiar")
+    guardadas = _limpiar_proxy()
+    _log_proxy_estado("DESPUES-limpiar")
 
     try:
+        s3 = _crear_cliente_s3(access_key, secret_key, endpoint)
+
         for intento in range(1, 4):
             try:
-                print(f"⬆️  Subiendo a R2 (intento {intento}/3): {clave_r2}")
-                s3.upload_file(
-                    ruta_real,
-                    bucket,
-                    clave_r2,
-                    ExtraArgs={"ContentType": "video/mp4"},
+                print(f"   🔄 Intento {intento}/3")
+
+                # Presigned PUT URL — operacion LOCAL, sin red, sin SSL
+                put_url = s3.generate_presigned_url(
+                    "put_object",
+                    Params    = {"Bucket": bucket, "Key": clave_r2},
+                    ExpiresIn = 3600,
                 )
-                url = s3.generate_presigned_url(
+
+                # Subida real con requests, proxy=None explicito
+                status = _subir_con_requests(ruta_real, put_url)
+                if status not in (200, 204):
+                    raise RuntimeError(f"R2 PUT devolvio HTTP {status}")
+
+                # Presigned GET URL para devolver al cliente — operacion LOCAL
+                get_url = s3.generate_presigned_url(
                     "get_object",
                     Params    = {"Bucket": bucket, "Key": clave_r2},
-                    ExpiresIn = 604800,   # 7 dias (maximo de R2)
+                    ExpiresIn = 604800,
                 )
-                print(f"✅ R2 OK: {url[:80]}...")
-                return url
+                print(f"   ✅ R2 OK: {get_url[:80]}...")
+                return get_url
+
             except Exception as e:
-                print(f"⚠️  R2 intento {intento} fallido: {e}")
+                print(f"   ⚠️  Intento {intento} fallido: {type(e).__name__}: {e}")
+                traceback.print_exc()
                 if intento < 3:
                     time.sleep(2 * intento)
-        print(f"❌ R2: {clave_r2} no se pudo subir tras 3 intentos")
+
+        print(f"   ❌ {clave_r2}: fallo definitivo tras 3 intentos")
         return None
+
+    except Exception as e:
+        print(f"❌ R2: error inesperado: {type(e).__name__}: {e}")
+        traceback.print_exc()
+        return None
+
     finally:
-        _restaurar_proxy(guardadas_proxy)
+        _restaurar_proxy(guardadas)
