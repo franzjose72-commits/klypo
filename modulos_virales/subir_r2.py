@@ -21,11 +21,21 @@ _PROXY_VARS = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
 
 
 def _crear_cliente_s3(access_key, secret_key, endpoint, bucket):
-    """Crea el cliente boto3 sin proxy (conexion directa a R2)."""
-    # Guarda y limpia variables de proxy del entorno
+    """Crea el cliente boto3 con conexion directa a R2, sin proxy."""
+    # 1. Elimina variables de proxy del entorno durante toda la operacion
     guardadas = {v: os.environ.pop(v) for v in _PROXY_VARS if v in os.environ}
+
+    # 2. NO_PROXY=* dice a urllib3 que bypasee el proxy para CUALQUIER host.
+    #    Esto cubre el caso donde RunPod inyecta el proxy a nivel de sistema
+    #    y botocore lo lee despues de crear el cliente.
+    os.environ["NO_PROXY"] = "*"
+    os.environ["no_proxy"] = "*"
+
     try:
-        cliente = boto3.client(
+        # 3. Sesion fresca — evita reutilizar cualquier estado cacheado de sesiones previas
+        import boto3.session as b3s
+        sesion = b3s.Session()
+        cliente = sesion.client(
             "s3",
             endpoint_url          = endpoint,
             aws_access_key_id     = access_key,
@@ -33,16 +43,24 @@ def _crear_cliente_s3(access_key, secret_key, endpoint, bucket):
             region_name           = "auto",
             config                = Config(
                 signature_version = "s3v4",
-                proxies           = {},   # fuerza conexion directa
+                # Dict no-vacio (truthy): botocore lo usa en vez de caer al fallback de env vars.
+                # Strings vacias = sin proxy para http y https.
+                proxies = {"http": "", "https": ""},
             ),
         )
         return cliente, guardadas
     except Exception:
-        os.environ.update(guardadas)   # restaura si falla la creacion
+        os.environ.pop("NO_PROXY", None)
+        os.environ.pop("no_proxy", None)
+        os.environ.update(guardadas)
         raise
 
 
 def _restaurar_proxy(guardadas: dict):
+    # Primero elimina los NO_PROXY que inyectamos (si no estaban antes no deben quedar)
+    os.environ.pop("NO_PROXY", None)
+    os.environ.pop("no_proxy", None)
+    # Luego restaura todo lo que estaba originalmente (incluye NO_PROXY si existia)
     os.environ.update(guardadas)
 
 

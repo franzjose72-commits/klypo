@@ -454,7 +454,11 @@ def render_viral(clip, output_path, words=None, titulo=None,
             threads=4,
             logger=None,
         )
-        clip.close()
+        # NO llamar clip.close() aqui: los subclips comparten el reader del
+        # VideoFileClip padre en motor_viral.py. Cerrarlo aqui pone el reader
+        # en None para todos los clips siguientes (clips 2,4,6,8 fallaban con
+        # "'NoneType' has no attribute 'stdout'"). El padre se cierra con
+        # video.close() al final de procesar_viral().
 
         # ── Paso 2: zoom automático + letterbox 9:16 + fades ─────────────────
 
