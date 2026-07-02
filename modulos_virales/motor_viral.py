@@ -81,27 +81,85 @@ def _obtener_video(fuente):
         proxy_args = ["--proxy", proxy_url]
         print("🌐 Usando proxy residencial DataImpulse")
     else:
-        print("⚠️  Sin proxy — descargando sin proxy (puede ser bloqueado en datacenter)")
+        print("⚠️  Sin proxy")
 
-    cmd = [
-        "yt-dlp", "--cookies", cookies,
-        "-f", "bv*+ba/b",
-        "--merge-output-format", "mp4",
-        "-o", output, "--no-playlist",
-        "--extractor-args", "youtube:player_client=web,android",
-        "--extractor-args", "youtubepot-bgutilscript:server_home=/root/bgutil-ytdlp-pot-provider/server",
-        "--verbose",
-    ] + proxy_args + [fuente]
-    try:
-        subprocess.run(cmd, check=True, text=True,
-                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        archivos = glob.glob(os.path.join(raiz, "viral_download.*"))
-        return archivos[0] if archivos else None
-    except subprocess.CalledProcessError as e:
-        salida = (e.output or "").strip()
-        raise ValueError(f"No se pudo obtener el video. yt-dlp output:\n{salida[-1500:] if salida else '(vacio)'}")
-    except Exception as e:
-        raise ValueError(f"No se pudo obtener el video: {e}")
+    bgutil_args = [
+        "--extractor-args",
+        "youtubepot-bgutilscript:server_home=/root/bgutil-ytdlp-pot-provider/server",
+    ]
+
+    # Estrategias en orden de prioridad para servidores datacenter con proxy residencial.
+    # android: da formato 18 (480p mp4 combinado), no usa cookies, funciona en datacenter.
+    # tv:      puede dar 1080p, acepta cookies.
+    # ios:     similar a android, sin cookies.
+    # web:     mejor calidad pero SABR obliga PO token — bgutil lo provee.
+    estrategias = [
+        {
+            "nombre": "android (sin cookies, 480p)",
+            "client": "android",
+            "formato": "18/best[ext=mp4]/best",
+            "cookies": False,
+        },
+        {
+            "nombre": "tv (con cookies)",
+            "client": "tv",
+            "formato": "bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/b",
+            "cookies": True,
+        },
+        {
+            "nombre": "ios (sin cookies)",
+            "client": "ios",
+            "formato": "best[ext=mp4]/best",
+            "cookies": False,
+        },
+        {
+            "nombre": "web+bgutil (con cookies)",
+            "client": "web",
+            "formato": "bv*+ba/b",
+            "cookies": True,
+        },
+    ]
+
+    errores = []
+    for i, est in enumerate(estrategias):
+        print(f"🎯 Intento {i+1}/{len(estrategias)}: {est['nombre']}")
+
+        # Limpiar archivo anterior entre intentos
+        for viejo in glob.glob(os.path.join(raiz, "viral_download.*")):
+            try: os.remove(viejo)
+            except: pass
+
+        cmd = ["yt-dlp"]
+        if est["cookies"] and os.path.exists(cookies):
+            cmd += ["--cookies", cookies]
+        cmd += [
+            "-f", est["formato"],
+            "--merge-output-format", "mp4",
+            "-o", output, "--no-playlist",
+            "--extractor-args", f"youtube:player_client={est['client']}",
+        ]
+        if est["client"] == "web":
+            cmd += bgutil_args
+        cmd += ["--verbose"] + proxy_args + [fuente]
+
+        try:
+            subprocess.run(cmd, check=True, text=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            archivos = glob.glob(os.path.join(raiz, "viral_download.*"))
+            if archivos:
+                print(f"✅ Descarga OK con estrategia: {est['nombre']}")
+                return archivos[0]
+            errores.append(f"[{est['nombre']}] yt-dlp exitoso pero archivo no encontrado")
+        except subprocess.CalledProcessError as e:
+            salida = (e.output or "").strip()
+            resumen = salida[-400:] if salida else "(sin output)"
+            print(f"❌ Estrategia {est['nombre']} fallida: {resumen[-200:]}")
+            errores.append(f"[{est['nombre']}] {resumen[-400:]}")
+
+    raise ValueError(
+        f"No se pudo descargar el video tras {len(estrategias)} estrategias.\n"
+        + "\n---\n".join(errores[-2:])  # últimos 2 errores para no saturar el JSON
+    )
 
 
 
