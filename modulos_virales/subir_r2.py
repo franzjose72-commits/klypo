@@ -224,6 +224,10 @@ def subir_clip_r2(ruta_local: str, nombre_archivo: str) -> "str | None":
 
     try:
         # Sesion fresca — solo para firmar URLs localmente (sin red)
+        # addressing_style="path" fuerza URLs como:
+        #   https://ACCOUNT.r2.cloudflarestorage.com/BUCKET/KEY?X-Amz-...
+        # Sin esto, boto3 puede usar virtual-hosted (BUCKET.ACCOUNT.r2...) que R2
+        # no sirve correctamente para acceso publico via presigned GET URL.
         s3 = b3s.Session().client(
             "s3",
             endpoint_url          = endpoint,
@@ -233,6 +237,7 @@ def subir_clip_r2(ruta_local: str, nombre_archivo: str) -> "str | None":
             config                = Config(
                 signature_version = "s3v4",
                 proxies           = {"http": "", "https": ""},
+                s3                = {"addressing_style": "path"},
             ),
         )
 
@@ -253,12 +258,21 @@ def subir_clip_r2(ruta_local: str, nombre_archivo: str) -> "str | None":
                     raise RuntimeError("curl upload fallido")
 
                 # Presigned GET: operacion LOCAL, sin red, sin TLS
-                get_url = s3.generate_presigned_url(
-                    "get_object",
-                    Params    = {"Bucket": bucket, "Key": clave_r2},
-                    ExpiresIn = 604800,  # 7 dias
-                )
-                print(f"   ✅ R2 OK: {get_url[:80]}...")
+                # Si R2_PUBLIC_URL esta configurado (ej: https://pub-HASH.r2.dev),
+                # devuelve URL publica directa sin firma — mas fiable para navegadores.
+                r2_public = os.environ.get("R2_PUBLIC_URL", "").strip().rstrip("/")
+                if r2_public:
+                    get_url = f"{r2_public}/{clave_r2}"
+                    print(f"   ✅ R2 OK (URL publica): {get_url}")
+                else:
+                    get_url = s3.generate_presigned_url(
+                        "get_object",
+                        Params    = {"Bucket": bucket, "Key": clave_r2},
+                        ExpiresIn = 604800,  # 7 dias
+                    )
+                    # URL completa en log para poder inspeccionarla si falla en navegador
+                    print(f"   ✅ R2 OK (presigned URL):")
+                    print(f"      {get_url}")
                 return get_url
 
             except Exception as e:

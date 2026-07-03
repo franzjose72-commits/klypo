@@ -1,146 +1,262 @@
 """
-KLYPO API — FastAPI backend
-Conecta el frontend web con el motor de clips virales.
+KLYPO API — FastAPI backend v2 (RunPod Serverless)
 
-Correr en local:
+El procesamiento ocurre en RunPod, no en este servidor.
+Este backend actua como proxy entre el frontend y la API de RunPod.
+
+Flujo:
+    POST /generar         → envia job a RunPod /run, guarda runpod_job_id, devuelve job_id
+    GET  /estado/{job_id} → consulta RunPod /status, mapea estado, devuelve clips con URLs R2
+    GET  /download/{path} → sirve clips locales (solo modo desarrollo local)
+    GET  /                → health check + modo activo
+
+Correr en local (apunta a RunPod de todas formas):
     uvicorn api:app --reload --port 8000
 
-Endpoints:
-    POST /generar          → inicia un job, devuelve job_id
-    GET  /estado/{job_id}  → polling del estado del job
-    GET  /download/{path}  → descarga un clip .mp4
-    GET  /                 → health check
+Variables de entorno requeridas (.env):
+    RUNPOD_API_KEY      - API key de RunPod (https://www.runpod.io/console/user/settings)
+    RUNPOD_ENDPOINT_ID  - ID del endpoint serverless (aparece en la URL del endpoint en RunPod)
 """
 
 import os
 import sys
 import uuid
-import threading
 import traceback
 
+import requests as _req
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-# ── Path para que Python encuentre modulos_virales/ ──────────────────────────
+load_dotenv()
+
+# ── Config ────────────────────────────────────────────────────────────────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(BASE_DIR, "modulos_virales"))
 
-# ── App ───────────────────────────────────────────────────────────────────────
-app = FastAPI(title="KLYPO API", version="1.0")
+RUNPOD_API_KEY     = os.environ.get("RUNPOD_API_KEY", "").strip()
+RUNPOD_ENDPOINT_ID = os.environ.get("RUNPOD_ENDPOINT_ID", "").strip()
+RUNPOD_BASE        = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}"
 
+# ── App ───────────────────────────────────────────────────────────────────────
+app = FastAPI(title="KLYPO API", version="2.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],        # en producción: reemplaza con tu dominio
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ── Jobs en memoria (para RunPod usar Redis) ──────────────────────────────────
-jobs: dict = {}
+# ── Jobs en memoria ───────────────────────────────────────────────────────────
 # Estructura de cada job:
 # {
-#   "estado":   "en_cola" | "procesando" | "listo" | "error",
-#   "progreso": str (mensaje legible para mostrar al usuario),
-#   "clips":    ["/download/CLIPS_VIRAL_V78/KLYPO_V78_01_...mp4", ...],
-#   "error":    str,
+#   "estado":         "en_cola" | "procesando" | "listo" | "error"
+#   "progreso":       str   — mensaje legible para el frontend
+#   "clips":          [str] — URLs de R2 (en prod) o paths /download/... (dev)
+#   "clips_detalle":  [{"nombre":..., "url":..., "local":...}]  (solo RunPod)
+#   "error":          str
+#   "runpod_job_id":  str   — ID del job en RunPod
 # }
+jobs: dict = {}
 
-# ── Modelos de entrada ────────────────────────────────────────────────────────
+# ── Modelo de entrada ─────────────────────────────────────────────────────────
 class SolicitudClip(BaseModel):
     url:        str
-    fuente_sub: str  = "Anton"     # Anton | Arial | Montserrat | BebasNeue | Poppins
+    fuente_sub: str  = "Anton"    # Anton | Arial | Montserrat | BebasNeue | Poppins
     mayusculas: bool = False
-    modo_sub:   str  = "bloques"   # bloques | karaoke | none
+    modo_sub:   str  = "bloques"  # bloques | karaoke | none
 
 
-# ── Worker en hilo separado ───────────────────────────────────────────────────
-def _worker(job_id: str, req: SolicitudClip):
-    try:
-        jobs[job_id]["estado"]   = "procesando"
-        jobs[job_id]["progreso"] = "⬇️ Descargando video de YouTube..."
+# ── Helpers RunPod ────────────────────────────────────────────────────────────
 
-        from motor_viral import procesar_viral
+def _headers() -> dict:
+    return {
+        "Authorization": f"Bearer {RUNPOD_API_KEY}",
+        "Content-Type":  "application/json",
+    }
 
-        def _log_progreso(msg: str):
-            jobs[job_id]["progreso"] = msg
 
-        def _clip_listo(ruta: str):
-            rel = os.path.relpath(ruta, BASE_DIR).replace("\\", "/")
-            jobs[job_id]["clips"].append(f"/download/{rel}")
-
-        _log_progreso("🎙️ Transcribiendo audio con AssemblyAI...")
-        rutas = procesar_viral(
-            req.url,
-            fuente_sub   = req.fuente_sub,
-            mayusculas   = req.mayusculas,
-            modo_sub     = req.modo_sub,
-            progreso_cb  = _log_progreso,
-            clip_listo_cb = _clip_listo,
-        )
-
-        n = len(jobs[job_id]["clips"])
-        jobs[job_id]["estado"]   = "listo"
-        jobs[job_id]["progreso"] = f"✅ {n} clip{'s' if n != 1 else ''} listo{'s' if n != 1 else ''} para descargar"
-
-    except Exception as e:
-        jobs[job_id]["estado"]   = "error"
-        jobs[job_id]["error"]    = str(e)
-        jobs[job_id]["progreso"] = f"❌ Error: {e}"
-        traceback.print_exc()
+# Mapa de estados RunPod → estados internos que usa el frontend
+_ESTADO = {
+    "IN_QUEUE":    "en_cola",
+    "IN_PROGRESS": "procesando",
+    "COMPLETED":   "listo",
+    "FAILED":      "error",
+    "CANCELLED":   "error",
+    "TIMED_OUT":   "error",
+}
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @app.get("/")
 def root():
-    return {"status": "KLYPO API funcionando ⚡", "jobs_activos": len(jobs)}
+    configurado = bool(RUNPOD_API_KEY and RUNPOD_ENDPOINT_ID)
+    return {
+        "status":       "KLYPO API funcionando ⚡",
+        "modo":         "runpod" if configurado else "sin-configurar",
+        "jobs_activos": len(jobs),
+    }
 
 
 @app.post("/generar")
 def generar(req: SolicitudClip):
     """
-    Inicia el procesamiento en background.
-    Devuelve job_id para hacer polling con /estado/{job_id}.
+    Envia el job a RunPod Serverless y devuelve el job_id interno.
+    El frontend usa ese job_id para hacer polling con /estado/{job_id}.
     """
     if not req.url.strip():
-        raise HTTPException(400, "URL vacía")
+        raise HTTPException(400, "URL vacia")
+
+    if not RUNPOD_API_KEY or not RUNPOD_ENDPOINT_ID:
+        raise HTTPException(
+            503,
+            "RunPod no configurado. "
+            "Agrega RUNPOD_API_KEY y RUNPOD_ENDPOINT_ID en el archivo .env",
+        )
+
+    # Payload que espera el handler.py en el worker de RunPod
+    payload = {
+        "input": {
+            "url":        req.url.strip(),
+            "modo":       "viral",
+            "fuente_sub": req.fuente_sub,
+            "mayusculas": req.mayusculas,
+            "modo_sub":   req.modo_sub,
+        }
+    }
+
+    try:
+        resp = _req.post(
+            f"{RUNPOD_BASE}/run",
+            json    = payload,
+            headers = _headers(),
+            timeout = 30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except _req.exceptions.RequestException as e:
+        raise HTTPException(502, f"Error conectando con RunPod: {e}")
+
+    runpod_job_id = data.get("id")
+    if not runpod_job_id:
+        raise HTTPException(502, f"RunPod no devolvio job ID: {data}")
 
     job_id = str(uuid.uuid4())
     jobs[job_id] = {
-        "estado":   "en_cola",
-        "progreso": "🕐 En cola...",
-        "clips":    [],
-        "error":    "",
+        "estado":        "en_cola",
+        "progreso":      "🕐 Job enviado a RunPod — en cola...",
+        "clips":         [],
+        "clips_detalle": [],
+        "error":         "",
+        "runpod_job_id": runpod_job_id,
     }
 
-    t = threading.Thread(target=_worker, args=(job_id, req), daemon=True)
-    t.start()
-
-    return {"job_id": job_id, "mensaje": "Procesamiento iniciado"}
+    print(f"✅ Job creado: interno={job_id}  RunPod={runpod_job_id}")
+    return {"job_id": job_id, "mensaje": "Procesamiento enviado a RunPod"}
 
 
 @app.get("/estado/{job_id}")
 def estado(job_id: str):
     """
     Polling del estado de un job.
-    El frontend llama esto cada 5s hasta que estado == 'listo' o 'error'.
+    Cada llamada consulta RunPod en tiempo real (excepto si ya terminó — cachea resultado).
+    El frontend llama esto cada ~5s hasta que estado == 'listo' o 'error'.
+
+    Respuesta:
+      {
+        "estado":   "en_cola" | "procesando" | "listo" | "error",
+        "progreso": "mensaje legible",
+        "clips":    ["https://r2.url/clip1.mp4", ...],   <- URLs directas de descarga
+        "error":    "mensaje de error si aplica"
+      }
     """
     if job_id not in jobs:
         raise HTTPException(404, "Job no encontrado")
-    return jobs[job_id]
+
+    job = jobs[job_id]
+
+    # Si ya terminó, devolver resultado cacheado sin volver a llamar a RunPod
+    if job["estado"] in ("listo", "error"):
+        return job
+
+    runpod_job_id = job.get("runpod_job_id")
+    if not runpod_job_id:
+        return job  # Job sin RunPod (no deberia ocurrir en produccion)
+
+    # Consultar estado en RunPod
+    try:
+        resp = _req.get(
+            f"{RUNPOD_BASE}/status/{runpod_job_id}",
+            headers = _headers(),
+            timeout = 15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except _req.exceptions.RequestException as e:
+        # Error de red transitorio: no actualizar estado, devolver ultimo conocido
+        print(f"⚠️  RunPod status error (job {job_id}): {e}")
+        return job
+
+    runpod_status = data.get("status", "")
+    job["estado"]  = _ESTADO.get(runpod_status, "en_cola")
+
+    if runpod_status == "IN_QUEUE":
+        job["progreso"] = "🕐 En cola en RunPod..."
+
+    elif runpod_status == "IN_PROGRESS":
+        job["progreso"] = "⚙️ Procesando: descarga → transcripcion → deteccion → clips..."
+
+    elif runpod_status == "COMPLETED":
+        output = data.get("output") or {}
+
+        if "error" in output:
+            # El handler de RunPod devolvio {"error": "..."} en su output
+            job["estado"]   = "error"
+            job["error"]    = output["error"]
+            job["progreso"] = f"❌ Error en RunPod: {output['error']}"
+
+        else:
+            clips_raw = output.get("clips", [])
+            # clips_raw: [{"nombre": "...", "url": "https://r2...", "local": "..."}, ...]
+
+            # URLs de R2 como lista simple — el frontend las usa directamente como links
+            urls = [c["url"] for c in clips_raw if c.get("url")]
+            n    = len(urls)
+
+            job["clips"]         = urls
+            job["clips_detalle"] = clips_raw   # detalle completo (nombre + url + local)
+            job["estado"]        = "listo"
+            job["progreso"]      = (
+                f"✅ {n} clip{'s' if n != 1 else ''} "
+                f"listo{'s' if n != 1 else ''} para descargar"
+            )
+
+    elif runpod_status in ("FAILED", "CANCELLED", "TIMED_OUT"):
+        # Intentar extraer mensaje de error de donde RunPod lo ponga
+        error_msg = (
+            data.get("error")
+            or (data.get("output") or {}).get("error")
+            or f"RunPod: {runpod_status}"
+        )
+        job["estado"]   = "error"
+        job["error"]    = error_msg
+        job["progreso"] = f"❌ {error_msg}"
+
+    return job
 
 
 @app.get("/download/{path:path}")
 def download(path: str):
     """
-    Sirve un clip .mp4 generado por KLYPO.
-    Solo permite acceso a archivos .mp4 dentro del proyecto.
+    Sirve clips locales (modo desarrollo).
+    En produccion con RunPod los clips se descargan directamente desde R2 —
+    este endpoint no se usa para esos jobs.
     """
     full_path = os.path.abspath(os.path.join(BASE_DIR, path))
 
-    # Seguridad: no permitir path traversal (../../etc)
     if not full_path.startswith(BASE_DIR):
         raise HTTPException(403, "Acceso denegado")
     if not full_path.endswith(".mp4"):
@@ -151,7 +267,7 @@ def download(path: str):
     filename = os.path.basename(full_path)
     return FileResponse(
         full_path,
-        media_type="video/mp4",
-        filename=filename,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        media_type = "video/mp4",
+        filename   = filename,
+        headers    = {"Content-Disposition": f'attachment; filename="{filename}"'},
     )
