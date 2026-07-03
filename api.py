@@ -64,6 +64,7 @@ jobs: dict = {}
 # ── Modelo de entrada ─────────────────────────────────────────────────────────
 class SolicitudClip(BaseModel):
     url:        str
+    modo:       str  = "viral"    # viral | podcast
     fuente_sub: str  = "Anton"    # Anton | Arial | Montserrat | BebasNeue | Poppins
     mayusculas: bool = False
     modo_sub:   str  = "bloques"  # bloques | karaoke | none
@@ -121,7 +122,7 @@ def generar(req: SolicitudClip):
     payload = {
         "input": {
             "url":        req.url.strip(),
-            "modo":       "viral",
+            "modo":       req.modo,
             "fuente_sub": req.fuente_sub,
             "mayusculas": req.mayusculas,
             "modo_sub":   req.modo_sub,
