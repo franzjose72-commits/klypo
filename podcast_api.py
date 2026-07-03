@@ -1,0 +1,258 @@
+"""
+KLYPO — Modo Podcast en RunPod (API no interactiva)
+
+Replica la logica de editor.ejecutar_nero() sin llamadas a input().
+Usa motor_viral._obtener_video() para la descarga con las estrategias
+android/tv/ios/web+bgutil y proxy DataImpulse — la misma infraestructura
+que usa el modo viral, ya probada en produccion.
+
+editor.py y ejecutar_nero() quedan intactos para uso en terminal.
+"""
+
+import os
+import sys
+import json
+import re
+import unicodedata
+
+_RAIZ = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(_RAIZ, "modulos_virales"))
+
+import moviepy as mpy
+
+# Fuentes disponibles en Linux (fonts/ en el contenedor)
+_FUENTES_LINUX = {"montserrat", "anton", "bebas"}
+
+# Mapeo desde valores de API (capitalizados) a internos (minusculas de subtitulos.py)
+# Impact y Arial no tienen archivo en Linux → Anton como fallback
+_FUENTE_API = {
+    "Anton":      "anton",
+    "Montserrat": "montserrat",
+    "BebasNeue":  "bebas",
+    "Poppins":    "montserrat",  # Poppins.ttf existe en fonts/ pero no esta en _FUENTES_MAP
+    "Arial":      "anton",       # subtitulos.py mapea Arial → impact, no existe en Linux
+    "impact":     "anton",       # por si llega en minusculas
+}
+
+
+def _fuente_segura(fuente_sub_api: str) -> str:
+    """Devuelve la fuente interna garantizando que el archivo exista en Linux."""
+    resultado = _FUENTE_API.get(fuente_sub_api, "anton")
+    return resultado if resultado in _FUENTES_LINUX else "anton"
+
+
+def _extraer_json(texto: str) -> list:
+    match = re.search(r'(\[.*?\]|\{.*?\})', texto, re.DOTALL)
+    if match:
+        try:
+            r = json.loads(match.group(1))
+            return [r] if isinstance(r, dict) else r
+        except Exception:
+            pass
+    return []
+
+
+def _sanitizar_titulo(titulo: str) -> str:
+    nfkd = unicodedata.normalize('NFD', titulo)
+    sin_acentos = ''.join(c for c in nfkd if not unicodedata.combining(c))
+    return ''.join(
+        c for c in sin_acentos if c.isascii() and (c.isalnum() or c in ' _-')
+    ).strip()[:50]
+
+
+def procesar_podcast(
+    url: str,
+    fuente_sub: str = "Anton",
+    mayusculas: bool = False,
+    modo_sub: str = "karaoke",
+) -> list:
+    """
+    Version no interactiva de editor.ejecutar_nero() para RunPod.
+
+    Parametros:
+        url        — URL de YouTube o ruta local al video
+        fuente_sub — Anton | Montserrat | BebasNeue | Arial | Poppins
+                     (Arial/Poppins/Impact sin archivo en Linux → Anton)
+        mayusculas — aceptado por compatibilidad; subtitulos.py aplica UPPER internamente
+        modo_sub   — karaoke | bloques | none
+
+    Devuelve:
+        Lista de rutas absolutas a los clips generados (.mp4)
+    """
+    from motor_viral import _obtener_video
+    from transcriptor import transcribir_clip_timestamps, procesar_segmentos_paralelo
+    from camara import nero_reframe
+    from subtitulos import agregar_subtitulos
+
+    fuente_interna = _fuente_segura(fuente_sub)
+    con_subs = (modo_sub != "none")
+
+    print(f"🎙️ KLYPO Podcast — fuente={fuente_interna} | modo_sub={modo_sub} | con_subs={con_subs}")
+
+    # ── 1. Descarga ──────────────────────────────────────────────────────────────
+    # Usa _obtener_video del modulo viral: android/tv/ios/web+bgutil + proxy DataImpulse
+    video_path = _obtener_video(url)
+    if not video_path:
+        raise ValueError("No se pudo descargar el video")
+
+    video = mpy.VideoFileClip(video_path)
+    duracion_total = video.duration
+    print(f"📹 Video: {duracion_total:.0f}s ({duracion_total / 60:.1f} min)")
+
+    # ── 2. Extraccion de audio por chunks de 10 min ───────────────────────────────
+    # Comienza en el segundo 150 (min 2:30) para saltar la intro editada
+    print("🧠 Analizando desde el min 2:30 (chunks de 10 min)...")
+    segmentos_audio = []
+    for start in range(150, int(duracion_total), 600):
+        fin_segmento = min(start + 600, duracion_total)
+        temp_audio = f"temp_podcast_{start}.mp3"
+        try:
+            video.audio.subclipped(start, fin_segmento).write_audiofile(
+                temp_audio, bitrate="16k", logger=None
+            )
+            segmentos_audio.append((start, temp_audio))
+        except Exception as e:
+            print(f"⚠️ Error extrayendo audio {start}s: {e}")
+
+    # max_workers=1: secuencial para no saturar el rate limit de Groq
+    resultados = procesar_segmentos_paralelo(segmentos_audio, duracion_total, max_workers=1)
+
+    guion_ganador = []
+    for start, ganchos_txt in resultados:
+        clips = _extraer_json(ganchos_txt)
+        for clip in clips:
+            try:
+                clip['inicio'] = float(clip['inicio']) + start
+                clip['fin']    = float(clip['fin']) + start
+                if clip['inicio'] < 150:
+                    clip['inicio'] = 150
+                if clip['inicio'] >= duracion_total or clip['fin'] > duracion_total:
+                    continue
+                guion_ganador.append(clip)
+            except Exception:
+                continue
+
+    for _, temp_audio in segmentos_audio:
+        if os.path.exists(temp_audio):
+            os.remove(temp_audio)
+
+    if not guion_ganador:
+        video.close()
+        raise ValueError("KLYPO no encontro clips virales en el video")
+
+    # ── 3. Deduplicacion (>50 % de overlap) ──────────────────────────────────────
+    guion_limpio = []
+    for clip in guion_ganador:
+        es_dup = False
+        for existente in guion_limpio:
+            ini_ov  = max(clip['inicio'], existente['inicio'])
+            fin_ov  = min(clip['fin'],   existente['fin'])
+            overlap = fin_ov - ini_ov
+            dur_c   = clip['fin'] - clip['inicio']
+            if overlap > dur_c * 0.5:
+                es_dup = True
+                break
+        if not es_dup:
+            guion_limpio.append(clip)
+
+    guion_ganador = guion_limpio
+    print(f"✅ {len(guion_ganador)} clips unicos encontrados.")
+
+    # ── 4. Edicion y renderizado ──────────────────────────────────────────────────
+    folder = "CLIPS_PODCAST_KLYPO"
+    os.makedirs(folder, exist_ok=True)
+    rutas_generadas = []
+
+    for i, info in enumerate(guion_ganador):
+        try:
+            inicio   = float(info['inicio'])
+            fin      = float(info['fin'])
+            duracion = fin - inicio
+
+            if duracion < 30 or duracion > 110:
+                print(f"⏭️ Clip {i+1} saltado ({duracion:.0f}s fuera de rango 30-110s)")
+                continue
+
+            inicio = max(150, inicio)
+            fin    = min(fin, duracion_total - 1)
+
+            if inicio >= duracion_total or fin <= inicio:
+                print(f"⏭️ Clip {i+1} saltado (inicio {inicio:.0f}s fuera del video)")
+                continue
+
+            titulo         = info.get('titulo', 'Clip_Podcast')
+            titulo_archivo = _sanitizar_titulo(titulo)
+            print(f"✨ Clip {i+1}: '{titulo}' ({duracion:.0f}s)")
+
+            clip = video.subclipped(inicio, fin)
+
+            # Transcribir con timestamps para subtitulos
+            words_sub      = []
+            audio_sub_path = f"temp_sub_podcast_{i}.wav"
+            try:
+                if con_subs and clip.audio:
+                    clip.audio.write_audiofile(
+                        audio_sub_path, fps=16000, nbytes=2,
+                        ffmpeg_params=["-ac", "1"], logger=None
+                    )
+                    words_sub = transcribir_clip_timestamps(audio_sub_path)
+                    if words_sub:
+                        print(f"   📝 {len(words_sub)} palabras para subtitulos")
+                    else:
+                        print("   ⚠️ Whisper devolvio 0 palabras")
+            except Exception as e:
+                import traceback as _tb
+                print(f"   ❌ Error subtitulos: {e}")
+                _tb.print_exc()
+            finally:
+                if os.path.exists(audio_sub_path):
+                    os.remove(audio_sub_path)
+
+            # Auto-trim: recortar silencio muerto al final si el LLM fue generoso
+            if words_sub:
+                fin_palabras = inicio + words_sub[-1]["end"] + 0.5
+                if fin_palabras < fin - 2.0:
+                    ahorro = fin - fin_palabras
+                    fin    = fin_palabras
+                    clip   = clip.subclipped(0, fin - inicio)
+                    print(f"   ✂️ Trim -{ahorro:.1f}s de silencio")
+
+            # Reencuadre 9:16 con deteccion de caras y VAD (nero_reframe abre su propio lector)
+            final = nero_reframe(video_path, clip, inicio, fin)
+
+            if words_sub and con_subs:
+                final = agregar_subtitulos(final, words_sub, fuente=fuente_interna, modo=modo_sub)
+
+            # Fade in/out suave 0.5s estilo CapCut
+            _dur = final.duration
+            def _fades(get_frame, t):
+                frame = get_frame(t).astype('float32')
+                if t < 0.5:
+                    frame *= t / 0.5
+                elif t > _dur - 0.5:
+                    frame *= max(0.0, (_dur - t) / 0.5)
+                return frame.astype('uint8')
+            final = final.transform(_fades)
+
+            output_path = os.path.join(folder, f"KLYPO_PODCAST_{i+1:02d}_{titulo_archivo}.mp4")
+            final.write_videofile(
+                output_path,
+                codec="libx264",
+                fps=24,
+                ffmpeg_params=["-preset", "ultrafast"],
+                threads=4,
+                logger=None,
+            )
+            clip.close()
+            final.close()
+            rutas_generadas.append(os.path.abspath(output_path))
+
+        except Exception as e:
+            import traceback as _tb
+            print(f"⚠️ Error editando clip {i+1}: {e}")
+            _tb.print_exc()
+            continue
+
+    video.close()
+    print(f"🏁 {len(rutas_generadas)} clips podcast generados en '{folder}'.")
+    return rutas_generadas

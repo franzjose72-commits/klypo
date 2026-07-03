@@ -1,18 +1,18 @@
 """
 KLYPO — RunPod Serverless Handler
 
-Recibe un job de RunPod, llama a procesar_viral y devuelve las rutas de los clips.
+Recibe un job de RunPod, procesa el video y devuelve las URLs de los clips en R2.
 
 Input esperado (event["input"]):
     url        : str   — URL de YouTube o ruta local al video
     fuente_sub : str   — Anton | Arial | Montserrat | BebasNeue | Poppins  (default: Anton)
-    mayusculas : bool  — True = MAYÚSCULAS en subtítulos  (default: False)
+    mayusculas : bool  — True = MAYUSCULAS en subtitulos  (default: False)
     modo_sub   : str   — bloques | karaoke | none          (default: bloques)
-    modo       : str   — "viral" (único modo soportado por ahora)
+    modo       : str   — "viral" | "podcast"               (default: viral)
 
-Límites de costo:
-    MAX_CLIPS   = 8    clips devueltos como máximo
-    MAX_DUR_SEG = 1200 segundos de video (20 min) — rechaza antes de descargar
+Limites:
+    MAX_CLIPS   = 15   clips devueltos como maximo
+    MAX_DUR_SEG = 7200 segundos de video (2 horas) — rechaza antes de descargar
 """
 
 import os
@@ -26,8 +26,8 @@ import runpod
 _RAIZ = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_RAIZ, "modulos_virales"))
 
-MAX_CLIPS   = 8
-MAX_DUR_SEG = 1200  # 20 minutos
+MAX_CLIPS   = 15
+MAX_DUR_SEG = 7200  # 2 horas
 
 # ── Cookies de YouTube ────────────────────────────────────────────────────────
 
@@ -119,24 +119,34 @@ def handler(event):
     if dur is not None and dur > MAX_DUR_SEG:
         return {
             "error": (
-                f"Video demasiado largo: {int(dur)}s "
-                f"(máximo permitido: {MAX_DUR_SEG}s = 20 min). "
-                f"Proporciona un clip más corto."
+                f"Video demasiado largo: {int(dur // 60):.0f} min "
+                f"(maximo permitido: {MAX_DUR_SEG // 3600:.0f} horas = {MAX_DUR_SEG} s)."
             )
         }
 
-    print(f"🚀 KLYPO handler — url={url[:60]} | fuente={fuente_sub} | modo_sub={modo_sub}")
+    print(f"🚀 KLYPO handler — modo={modo} | url={url[:60]} | fuente={fuente_sub} | modo_sub={modo_sub}")
 
-    # ── Procesamiento ─────────────────────────────────────────────────────────
+    # ── Ruteo de modos ────────────────────────────────────────────────────────
+    if modo not in ("viral", "podcast"):
+        return {"error": f"Modo '{modo}' no reconocido. Modos disponibles: viral, podcast"}
+
     try:
-        from motor_viral import procesar_viral
-
-        rutas = procesar_viral(
-            url,
-            fuente_sub = fuente_sub,
-            mayusculas = mayusculas,
-            modo_sub   = modo_sub,
-        )
+        if modo == "podcast":
+            from podcast_api import procesar_podcast
+            rutas = procesar_podcast(
+                url,
+                fuente_sub = fuente_sub,
+                mayusculas = mayusculas,
+                modo_sub   = modo_sub,
+            )
+        else:
+            from motor_viral import procesar_viral
+            rutas = procesar_viral(
+                url,
+                fuente_sub = fuente_sub,
+                mayusculas = mayusculas,
+                modo_sub   = modo_sub,
+            )
 
         # Limitar clips para controlar costo
         if len(rutas) > MAX_CLIPS:
@@ -151,7 +161,7 @@ def handler(event):
             r2_url = subir_clip_r2(ruta, nombre)
             clips_resultado.append({
                 "nombre": nombre,
-                "url":    r2_url or "",    # URL de R2 o vacío si falló la subida
+                "url":    r2_url or "",    # URL de R2 o vacio si fallo la subida
                 "local":  ruta,            # ruta en el contenedor (referencia)
             })
 

@@ -48,6 +48,14 @@ COPY modulos_virales/ ./modulos_virales/
 COPY fonts/           ./fonts/
 COPY handler.py       .
 
+# Modulo podcast (archivos de la raiz del proyecto)
+COPY editor.py       .
+COPY camara.py       .
+COPY transcriptor.py .
+COPY descargador.py  .
+COPY subtitulos.py   .
+COPY podcast_api.py  .
+
 # Cache HuggingFace (usar Network Volume en /app/.cache en RunPod para persistir modelos)
 ENV HF_HOME=/app/.cache/huggingface
 ENV TRANSFORMERS_CACHE=/app/.cache/huggingface
