@@ -97,11 +97,10 @@ def handler(event):
     inp = event.get("input", {})
 
     url        = inp.get("url",        "").strip()
-    fuente_sub = inp.get("fuente_sub", "Anton")
+    fuente_sub = inp.get("fuente_sub", "Anton").strip()
     mayusculas = bool(inp.get("mayusculas", False))
-    modo_sub   = inp.get("modo_sub",   "bloques")
-    # modo es para extensión futura (viral / podcast) — actualmente solo viral
-    modo       = inp.get("modo",       "viral")
+    modo_sub   = inp.get("modo_sub",   "bloques").strip().lower()
+    modo       = inp.get("modo",       "viral").strip().lower()
 
     # ── Validación de entrada ─────────────────────────────────────────────────
     if not url:
