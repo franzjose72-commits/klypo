@@ -170,6 +170,7 @@ def procesar_podcast(
     fuente_sub: str = "Anton",
     mayusculas: bool = False,
     modo_sub: str = "karaoke",
+    on_clip_listo = None,
 ) -> list:
     """
     Version no interactiva de editor.ejecutar_nero() para RunPod.
@@ -375,6 +376,11 @@ def procesar_podcast(
             # siguientes clips con "'NoneType' has no attribute 'stdout'".
             # video.close() se llama UNA sola vez al salir del loop (ver abajo).
             rutas_generadas.append(os.path.abspath(output_path))
+            if on_clip_listo:
+                try:
+                    on_clip_listo(os.path.abspath(output_path))
+                except Exception as _cb_e:
+                    print(f"   ⚠️ Callback on_clip_listo: {_cb_e}")
 
         except Exception as e:
             import traceback as _tb

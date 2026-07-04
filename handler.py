@@ -206,16 +206,70 @@ def handler(event):
     if modo not in ("viral", "podcast"):
         return {"error": f"Modo '{modo}' no reconocido. Modos disponibles: viral, podcast"}
 
+    from subir_r2 import subir_clip_r2
+    clips_resultado = []
+
     try:
         if modo == "podcast":
-            from podcast_api import procesar_podcast
-            rutas = procesar_podcast(
-                url,
-                fuente_sub = fuente_sub,
-                mayusculas = mayusculas,
-                modo_sub   = modo_sub,
-            )
+            import queue as _queue
+            import threading as _threading
+
+            cola      = _queue.Queue()
+            error_box = [None]
+
+            def _on_clip(local_path):
+                # Llamado desde el hilo de podcast al terminar cada clip
+                cola.put(local_path)
+
+            def _run_podcast():
+                try:
+                    from podcast_api import procesar_podcast
+                    procesar_podcast(
+                        url,
+                        fuente_sub    = fuente_sub,
+                        mayusculas    = mayusculas,
+                        modo_sub      = modo_sub,
+                        on_clip_listo = _on_clip,
+                    )
+                except Exception as e:
+                    error_box[0] = e
+                    print(f"❌ Error en hilo podcast: {e}")
+                    traceback.print_exc()
+                finally:
+                    cola.put(None)  # sentinel: podcast terminó
+
+            hilo = _threading.Thread(target=_run_podcast, daemon=True)
+            hilo.start()
+
+            while len(clips_resultado) < MAX_CLIPS:
+                try:
+                    local_path = cola.get(timeout=900)  # 15 min max entre clips
+                except _queue.Empty:
+                    print("⚠️ Timeout: sin nuevo clip de podcast en 15 min")
+                    break
+
+                if local_path is None:  # sentinel: podcast terminó
+                    break
+
+                nombre = os.path.basename(local_path)
+                try:
+                    r2_url = subir_clip_r2(local_path, nombre)
+                    if r2_url:
+                        clip_item = {"url": r2_url, "nombre": nombre, "local": local_path}
+                        clips_resultado.append(clip_item)
+                        yield {"clips": [clip_item]}  # stream parcial → RunPod /stream/
+                        print(f"📤 Clip {len(clips_resultado)} en stream: {r2_url}")
+                except Exception as e_sub:
+                    print(f"⚠️ Error subiendo clip podcast '{nombre}': {e_sub}")
+
+            hilo.join(timeout=30)
+
+            if error_box[0] and not clips_resultado:
+                yield {"error": str(error_box[0]), "traceback": traceback.format_exc()}
+                return
+
         else:
+            # Viral: motor_viral.py NO se toca — devuelve todas las rutas juntas
             from motor_viral import procesar_viral
             rutas = procesar_viral(
                 url,
@@ -224,34 +278,35 @@ def handler(event):
                 modo_sub   = modo_sub,
             )
 
-        # Limitar clips para controlar costo
-        if len(rutas) > MAX_CLIPS:
-            print(f"⚠️ {len(rutas)} clips generados — limitando a {MAX_CLIPS}")
-            rutas = rutas[:MAX_CLIPS]
+            if len(rutas) > MAX_CLIPS:
+                print(f"⚠️ {len(rutas)} clips generados — limitando a {MAX_CLIPS}")
+                rutas = rutas[:MAX_CLIPS]
 
-        # Subir a R2 y reemplazar rutas locales por URLs descargables
-        from subir_r2 import subir_clip_r2
-        clips_resultado = []
-        for ruta in rutas:
-            nombre = os.path.basename(ruta)
-            r2_url = subir_clip_r2(ruta, nombre)
-            clips_resultado.append({
-                "nombre": nombre,
-                "url":    r2_url or "",    # URL de R2 o vacio si fallo la subida
-                "local":  ruta,            # ruta en el contenedor (referencia)
-            })
+            for ruta in rutas:
+                nombre = os.path.basename(ruta)
+                try:
+                    r2_url = subir_clip_r2(ruta, nombre)
+                    if r2_url:
+                        clip_item = {"url": r2_url, "nombre": nombre, "local": ruta}
+                        clips_resultado.append(clip_item)
+                        yield {"clips": [clip_item]}  # un yield por clip viral
+                        print(f"📤 Clip viral {len(clips_resultado)}/{len(rutas)}: {r2_url}")
+                except Exception as e_sub:
+                    print(f"⚠️ Error subiendo clip viral '{nombre}': {e_sub}")
 
-        print(f"✅ {len(clips_resultado)} clips listos")
-        return {
+        print(f"✅ {len(clips_resultado)} clips totales")
+        yield {
             "clips":       clips_resultado,
             "total_clips": len(clips_resultado),
         }
 
     except Exception as e:
         print(f"❌ Error en handler: {e}")
-        return {
+        traceback.print_exc()
+        yield {
             "error":     str(e),
             "traceback": traceback.format_exc(),
+            "clips":     clips_resultado,
         }
 
 
