@@ -21,10 +21,11 @@ Variables de entorno requeridas (.env):
 import os
 import sys
 import traceback
+from typing import Optional
 
 import requests as _req
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -283,6 +284,39 @@ def estado(job_id: str):
         job["progreso"] = f"❌ {error_msg}"
 
     return job
+
+
+@app.get("/presigned-upload")
+def presigned_upload(filename: str = Query(..., description="Nombre del archivo a subir")):
+    """
+    Genera una presigned PUT URL para que el navegador suba un video DIRECTAMENTE a R2.
+    El archivo nunca pasa por este servidor — va navegador → R2.
+
+    Flujo:
+      1. Frontend llama GET /presigned-upload?filename=mi_video.mp4
+      2. Recibe { upload_url, public_url, key }
+      3. Frontend hace PUT a upload_url con el archivo (XHR con progress)
+      4. Frontend llama POST /generar con public_url como campo 'url'
+      5. RunPod descarga el video de R2 directamente (HTTP GET simple)
+    """
+    if not filename.strip():
+        raise HTTPException(400, "Falta el nombre de archivo")
+
+    from subir_r2 import generar_presigned_put
+    resultado = generar_presigned_put(filename.strip())
+
+    if not resultado:
+        raise HTTPException(503, "R2 no está configurado (faltan credenciales en .env)")
+
+    if not resultado.get("public_url"):
+        raise HTTPException(
+            503,
+            "R2_PUBLIC_URL no está configurado. "
+            "RunPod necesita esa URL para descargar el video. "
+            "Agrégala en .env: R2_PUBLIC_URL=https://pub-XXXX.r2.dev"
+        )
+
+    return resultado   # {put_url, public_url, key}
 
 
 @app.get("/download/{path:path}")

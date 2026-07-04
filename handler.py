@@ -20,6 +20,7 @@ import sys
 import subprocess
 import traceback
 
+import requests
 import runpod
 
 # modulos_virales/ está al mismo nivel que handler.py dentro del contenedor
@@ -79,6 +80,40 @@ def _precargar_modulos_podcast():
 _precargar_modulos_podcast()
 
 
+# ── Descarga directa (para archivos subidos por el usuario, no YouTube) ───────
+
+def _es_youtube(url: str) -> bool:
+    return "youtube.com" in url or "youtu.be" in url
+
+
+def _descargar_directo(url: str, dest: str) -> str:
+    """
+    Descarga un archivo de video desde una URL directa (R2, CDN, etc.) usando requests.
+    Se usa cuando el usuario sube su propio video en vez de pegar un link de YouTube.
+    Devuelve la ruta local del archivo descargado.
+    """
+    print(f"⬇️  Descargando archivo directo (no YouTube): {url[:80]}...")
+    resp = requests.get(url, stream=True, timeout=(30, 600))
+    resp.raise_for_status()
+
+    total      = int(resp.headers.get("content-length", 0))
+    descargado = 0
+    ultimo_log = 0
+
+    with open(dest, "wb") as f:
+        for chunk in resp.iter_content(chunk_size=8 * 1024 * 1024):  # 8 MB chunks
+            if chunk:
+                f.write(chunk)
+                descargado += len(chunk)
+                if total and descargado - ultimo_log >= 50 * 1024 * 1024:  # log cada 50 MB
+                    pct = descargado / total * 100
+                    print(f"   📥 {pct:.0f}%  {descargado // 1_048_576} MB / {total // 1_048_576} MB")
+                    ultimo_log = descargado
+
+    print(f"✅ Descarga directa completa: {descargado // 1_048_576} MB → {dest}")
+    return dest
+
+
 def _duracion_video(url: str) -> float | None:
     """
     Obtiene la duración en segundos SIN descargar el video completo.
@@ -135,6 +170,18 @@ def handler(event):
     # ── Validación de entrada ─────────────────────────────────────────────────
     if not url:
         return {"error": "Falta el campo 'url' en el input"}
+
+    # ── Descarga directa para videos subidos por el usuario (no YouTube) ──────
+    # Si la URL es de R2 u otro CDN (no YouTube), descargamos el archivo localmente
+    # antes de pasarlo a procesar_viral / procesar_podcast.
+    # Ambos modos aceptan rutas locales, por lo que el resto del pipeline no cambia.
+    if url.startswith("http") and not _es_youtube(url):
+        dest_directo = os.path.join(_RAIZ, "video_directo.mp4")
+        try:
+            url = _descargar_directo(url, dest_directo)
+        except Exception as e:
+            print(f"❌ Error descargando archivo directo: {e}")
+            return {"error": f"No se pudo descargar el archivo de video: {e}"}
 
     fuentes_validas = {"Anton", "Arial", "Montserrat", "BebasNeue", "Poppins"}
     if fuente_sub not in fuentes_validas:

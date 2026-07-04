@@ -201,6 +201,57 @@ def _subir_con_curl(ruta_local: str, put_url: str) -> bool:
 
 # ── API publica ───────────────────────────────────────────────────────────────
 
+def generar_presigned_put(nombre_archivo: str) -> "dict | None":
+    """
+    Genera una presigned PUT URL para que el navegador suba un video directamente a R2.
+    Devuelve {"put_url": "...", "public_url": "...", "key": "..."} o None si falla.
+
+    El navegador hace PUT a put_url (sin pasar por api.py).
+    Luego usa public_url como campo 'url' en /generar para que RunPod lo descargue.
+    """
+    access_key = os.environ.get("R2_ACCESS_KEY_ID",     "").strip()
+    secret_key = os.environ.get("R2_SECRET_ACCESS_KEY", "").strip()
+    endpoint   = os.environ.get("R2_ENDPOINT",          "").strip()
+    bucket     = os.environ.get("R2_BUCKET", "klypo-clips").strip()
+    r2_public  = os.environ.get("R2_PUBLIC_URL", "").strip().rstrip("/")
+
+    if not all([access_key, secret_key, endpoint]):
+        print("⚠️  generar_presigned_put: faltan credenciales R2")
+        return None
+
+    clave = _sanitizar_clave_r2(nombre_archivo)
+
+    guardadas = _limpiar_proxy()
+    try:
+        s3 = b3s.Session().client(
+            "s3",
+            endpoint_url          = endpoint,
+            aws_access_key_id     = access_key,
+            aws_secret_access_key = secret_key,
+            region_name           = "auto",
+            config                = Config(
+                signature_version = "s3v4",
+                proxies           = {"http": "", "https": ""},
+                s3                = {"addressing_style": "path"},
+            ),
+        )
+        put_url = s3.generate_presigned_url(
+            "put_object",
+            Params    = {"Bucket": bucket, "Key": clave, "ContentType": "video/mp4"},
+            ExpiresIn = 3600,  # 1 hora — tiempo suficiente para subir videos grandes
+        )
+        public_url = f"{r2_public}/{clave}" if r2_public else None
+        print(f"✅ Presigned PUT generada para: {clave}")
+        return {"put_url": put_url, "public_url": public_url, "key": clave}
+
+    except Exception as e:
+        print(f"⚠️  generar_presigned_put error: {type(e).__name__}: {e}")
+        return None
+
+    finally:
+        _restaurar_proxy(guardadas)
+
+
 def subir_clip_r2(ruta_local: str, nombre_archivo: str) -> "str | None":
     """
     Sube un clip a Cloudflare R2 usando curl para el PUT.
