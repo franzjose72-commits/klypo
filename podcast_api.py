@@ -2,17 +2,18 @@
 KLYPO — Modo Podcast en RunPod (API no interactiva)
 
 Replica la logica de editor.ejecutar_nero() sin llamadas a input().
-Usa motor_viral._obtener_video() para la descarga con las estrategias
-android/tv/ios/web+bgutil y proxy DataImpulse — la misma infraestructura
-que usa el modo viral, ya probada en produccion.
+Descarga con las estrategias android/tv/ios/web+bgutil y proxy DataImpulse
+definidas directamente aqui (sin importar motor_viral ni sus modulos de IA).
 
 editor.py y ejecutar_nero() quedan intactos para uso en terminal.
 """
 
 import os
 import sys
+import glob
 import json
 import re
+import subprocess
 import unicodedata
 
 _RAIZ = os.path.dirname(os.path.abspath(__file__))
@@ -60,6 +61,94 @@ def _sanitizar_titulo(titulo: str) -> str:
     ).strip()[:50]
 
 
+def _descargar_podcast(url: str) -> str:
+    """
+    Descarga el video con las mismas 4 estrategias del modo viral:
+    android (sin cookies) → tv (con cookies) → ios → web+bgutil.
+    Definida aqui para no importar motor_viral (evita cargar modulos de IA).
+    """
+    url = url.strip()
+    if not url.startswith("http"):
+        if os.path.exists(url):
+            return url
+        raise ValueError(f"Archivo local no encontrado: {url}")
+
+    print("⬇️  Descargando podcast de YouTube...")
+
+    cookies    = os.path.join(_RAIZ, "llave.txt")
+    output_tpl = os.path.join(_RAIZ, "podcast_download.%(ext)s")
+
+    proxy_user = os.environ.get("PROXY_USER", "").strip()
+    proxy_pass = os.environ.get("PROXY_PASS", "").strip()
+    proxy_args = []
+    if proxy_user and proxy_pass:
+        proxy_args = ["--proxy", f"http://{proxy_user}:{proxy_pass}@gw.dataimpulse.com:823"]
+        print("🌐 Proxy DataImpulse activo")
+    else:
+        print("⚠️  Sin proxy — descarga directa")
+
+    bgutil_args = [
+        "--extractor-args",
+        "youtubepot-bgutilscript:server_home=/root/bgutil-ytdlp-pot-provider/server",
+    ]
+
+    estrategias = [
+        {"nombre": "android (sin cookies, 480p)",
+         "client": "android", "formato": "18/best[ext=mp4]/best",               "cookies": False},
+        {"nombre": "tv (con cookies)",
+         "client": "tv",      "formato": "bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/b",  "cookies": True},
+        {"nombre": "ios (sin cookies)",
+         "client": "ios",     "formato": "best[ext=mp4]/best",                  "cookies": False},
+        {"nombre": "web+bgutil (con cookies)",
+         "client": "web",     "formato": "bv*+ba/b",                            "cookies": True},
+    ]
+
+    errores = []
+    for i, est in enumerate(estrategias):
+        print(f"🎯 Intento {i+1}/{len(estrategias)}: {est['nombre']}")
+
+        for viejo in glob.glob(os.path.join(_RAIZ, "podcast_download.*")):
+            try:
+                os.remove(viejo)
+            except Exception:
+                pass
+
+        cmd = ["yt-dlp"]
+        if est["cookies"] and os.path.exists(cookies):
+            cmd += ["--cookies", cookies]
+        cmd += [
+            "-f", est["formato"],
+            "--merge-output-format", "mp4",
+            "-o", output_tpl,
+            "--no-playlist",
+            "--extractor-args", f"youtube:player_client={est['client']}",
+        ]
+        if est["client"] == "web":
+            cmd += bgutil_args
+        cmd += ["--verbose"] + proxy_args + [url]
+
+        try:
+            subprocess.run(
+                cmd, check=True, text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            )
+            archivos = glob.glob(os.path.join(_RAIZ, "podcast_download.*"))
+            if archivos:
+                print(f"✅ Descarga OK: {est['nombre']}")
+                return archivos[0]
+            errores.append(f"[{est['nombre']}] archivo no encontrado tras descarga")
+        except subprocess.CalledProcessError as e:
+            salida  = (e.output or "").strip()
+            resumen = salida[-400:] if salida else "(sin output)"
+            print(f"❌ Estrategia {est['nombre']} fallida")
+            errores.append(f"[{est['nombre']}] {resumen}")
+
+    raise ValueError(
+        f"No se pudo descargar el podcast tras {len(estrategias)} estrategias.\n"
+        + "\n---\n".join(errores[-2:])
+    )
+
+
 def procesar_podcast(
     url: str,
     fuente_sub: str = "Anton",
@@ -79,7 +168,6 @@ def procesar_podcast(
     Devuelve:
         Lista de rutas absolutas a los clips generados (.mp4)
     """
-    from motor_viral import _obtener_video
     from transcriptor import transcribir_clip_timestamps, procesar_segmentos_paralelo
     from camara import nero_reframe
     from subtitulos import agregar_subtitulos
@@ -90,10 +178,7 @@ def procesar_podcast(
     print(f"🎙️ KLYPO Podcast — fuente={fuente_interna} | modo_sub={modo_sub} | con_subs={con_subs}")
 
     # ── 1. Descarga ──────────────────────────────────────────────────────────────
-    # Usa _obtener_video del modulo viral: android/tv/ios/web+bgutil + proxy DataImpulse
-    video_path = _obtener_video(url)
-    if not video_path:
-        raise ValueError("No se pudo descargar el video")
+    video_path = _descargar_podcast(url)
 
     video = mpy.VideoFileClip(video_path)
     duracion_total = video.duration

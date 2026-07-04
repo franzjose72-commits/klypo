@@ -60,4 +60,11 @@ COPY podcast_api.py  .
 ENV HF_HOME=/app/.cache/huggingface
 ENV TRANSFORMERS_CACHE=/app/.cache/huggingface
 
+# Pre-descargar Silero VAD en la imagen (evita descarga en cada cold start del worker)
+# torch.hub cachea el modelo en ~/.cache/torch/hub dentro del contenedor
+RUN python -c "\
+import torch; \
+torch.hub.load('snakers4/silero-vad', 'silero_vad', force_reload=False, trust_repo=True); \
+print('Silero VAD pre-cacheado OK')"
+
 CMD ["python", "-u", "handler.py"]
