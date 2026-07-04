@@ -16,10 +16,12 @@ Estrategia:
 """
 
 import os
+import re
 import glob
 import subprocess
 import time
 import traceback
+import unicodedata
 
 import boto3.session as b3s
 import certifi
@@ -28,6 +30,19 @@ from botocore.config import Config
 
 _PROXY_VARS = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
                "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy")
+
+
+def _sanitizar_clave_r2(nombre: str) -> str:
+    """
+    Limpia el nombre de archivo para usarlo como R2 key y en URLs publicas.
+    Elimina acentos, reemplaza espacios y caracteres especiales con guion bajo.
+    Resultado: solo A-Z a-z 0-9 . _ - (seguro en cualquier URL sin encoding).
+    """
+    nfkd    = unicodedata.normalize('NFD', nombre)
+    sin_ac  = ''.join(c for c in nfkd if not unicodedata.combining(c))
+    limpio  = re.sub(r'[^A-Za-z0-9._\-]', '_', sin_ac)
+    limpio  = re.sub(r'_+', '_', limpio)   # colapsar guiones dobles
+    return limpio
 
 
 # ── Proxy: diagnostico y gestion ─────────────────────────────────────────────
@@ -212,7 +227,10 @@ def subir_clip_r2(ruta_local: str, nombre_archivo: str) -> "str | None":
     if not ruta_real:
         return None
 
-    clave_r2 = os.path.basename(ruta_real)
+    clave_r2_original = os.path.basename(ruta_real)
+    clave_r2          = _sanitizar_clave_r2(clave_r2_original)
+    if clave_r2 != clave_r2_original:
+        print(f"   🔤 Nombre sanitizado: '{clave_r2_original}' → '{clave_r2}'")
     print(f"\n📤 R2: {clave_r2}")
 
     _log_proxy("ANTES-limpiar")
@@ -263,16 +281,15 @@ def subir_clip_r2(ruta_local: str, nombre_archivo: str) -> "str | None":
                 r2_public = os.environ.get("R2_PUBLIC_URL", "").strip().rstrip("/")
                 if r2_public:
                     get_url = f"{r2_public}/{clave_r2}"
-                    print(f"   ✅ R2 OK (URL publica): {get_url}")
+                    print(f"   ✅ R2 OK (URL publica)")
                 else:
                     get_url = s3.generate_presigned_url(
                         "get_object",
                         Params    = {"Bucket": bucket, "Key": clave_r2},
                         ExpiresIn = 604800,  # 7 dias
                     )
-                    # URL completa en log para poder inspeccionarla si falla en navegador
-                    print(f"   ✅ R2 OK (presigned URL):")
-                    print(f"      {get_url}")
+                    print(f"   ✅ R2 OK (presigned URL)")
+                print(f"   🔗 URL FINAL del clip: {get_url}")
                 return get_url
 
             except Exception as e:
