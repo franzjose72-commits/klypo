@@ -2,15 +2,20 @@ import os
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
+# Usar rutas absolutas: evita que os.path.exists() falle si el cwd no es /app
+_RAIZ = os.path.dirname(os.path.abspath(__file__))
+_FONTS_DIR = os.path.join(_RAIZ, "fonts")
+
 def descargar_montserrat():
-    os.makedirs("fonts", exist_ok=True)
-    path = "fonts/MontserratBlack.ttf"
+    os.makedirs(_FONTS_DIR, exist_ok=True)
+    path = os.path.join(_FONTS_DIR, "MontserratBlack.ttf")
     if os.path.exists(path):
         return path
     try:
         import requests
         url = "https://github.com/JulietaUla/Montserrat/raw/master/fonts/ttf/Montserrat-Black.ttf"
-        r = requests.get(url, timeout=15)
+        # timeout=(connect, read): ambos limitados a 15s para no colgar la importación
+        r = requests.get(url, timeout=(15, 15), stream=False)
         if r.status_code == 200:
             with open(path, "wb") as f:
                 f.write(r.content)
@@ -23,16 +28,17 @@ def descargar_montserrat():
 _montserrat_path = descargar_montserrat()
 
 _FUENTES_MAP = {
-    "montserrat": ["fonts/MontserratBlack.ttf", "fonts/Montserrat.ttf"],
-    "anton":      ["fonts/Anton.ttf"],
-    "bebas":      ["fonts/BebasNeue.ttf"],
-    "impact":     ["C:/Windows/Fonts/impact.ttf"],
+    "montserrat": [
+        os.path.join(_FONTS_DIR, "MontserratBlack.ttf"),
+        os.path.join(_FONTS_DIR, "Montserrat.ttf"),
+    ],
+    "anton":  [os.path.join(_FONTS_DIR, "Anton.ttf")],
+    "bebas":  [os.path.join(_FONTS_DIR, "BebasNeue.ttf")],
+    "impact": [os.path.join(_FONTS_DIR, "MontserratBlack.ttf")],  # fallback Linux
 }
 _FALLBACKS = [
-    "C:/Windows/Fonts/impact.ttf",
-    "C:/Windows/Fonts/ariblk.ttf",
-    "C:/Windows/Fonts/arialbd.ttf",
-    "C:/Windows/Fonts/arial.ttf",
+    os.path.join(_FONTS_DIR, "Anton.ttf"),
+    os.path.join(_FONTS_DIR, "Montserrat.ttf"),
 ]
 
 def cargar_fuente_sub(size, fuente="montserrat"):

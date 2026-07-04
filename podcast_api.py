@@ -168,9 +168,20 @@ def procesar_podcast(
     Devuelve:
         Lista de rutas absolutas a los clips generados (.mp4)
     """
+    import time as _time
+    _t0 = _time.time()
+
+    print(f"⏱️ [+{_time.time()-_t0:.1f}s] Importando transcriptor...")
     from transcriptor import transcribir_clip_timestamps, procesar_segmentos_paralelo
+    print(f"⏱️ [+{_time.time()-_t0:.1f}s] transcriptor OK")
+
+    print(f"⏱️ [+{_time.time()-_t0:.1f}s] Importando camara...")
     from camara import nero_reframe
+    print(f"⏱️ [+{_time.time()-_t0:.1f}s] camara OK")
+
+    print(f"⏱️ [+{_time.time()-_t0:.1f}s] Importando subtitulos...")
     from subtitulos import agregar_subtitulos
+    print(f"⏱️ [+{_time.time()-_t0:.1f}s] subtitulos OK")
 
     fuente_interna = _fuente_segura(fuente_sub)
     con_subs = (modo_sub != "none")
