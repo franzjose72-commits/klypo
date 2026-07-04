@@ -310,4 +310,12 @@ def handler(event):
         }
 
 
-runpod.serverless.start({"handler": handler})
+runpod.serverless.start({
+    "handler": handler,
+    # Con return_aggregate_stream=True, cuando el generator termina RunPod
+    # agrega TODOS los yields como lista en el output del /status (COMPLETED).
+    # Sin esto, el output queda vacío ({}) y los clips solo llegan por /stream
+    # que es efímero y se puede perder. Con esto, el COMPLETED siempre
+    # tiene todos los clips aunque el /stream haya fallado o timed-out.
+    "return_aggregate_stream": True,
+})
