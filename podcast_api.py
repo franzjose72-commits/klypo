@@ -22,17 +22,16 @@ sys.path.insert(0, os.path.join(_RAIZ, "modulos_virales"))
 import moviepy as mpy
 
 # Fuentes disponibles en Linux (fonts/ en el contenedor)
-_FUENTES_LINUX = {"montserrat", "anton", "bebas"}
+_FUENTES_LINUX = {"montserrat", "poppins", "anton", "bebas"}
 
 # Mapeo desde valores de API (capitalizados) a internos (minusculas de subtitulos.py)
-# Impact y Arial no tienen archivo en Linux → Anton como fallback
 _FUENTE_API = {
     "Anton":      "anton",
     "Montserrat": "montserrat",
     "BebasNeue":  "bebas",
-    "Poppins":    "montserrat",  # Poppins.ttf existe en fonts/ pero no esta en _FUENTES_MAP
-    "Arial":      "anton",       # subtitulos.py mapea Arial → impact, no existe en Linux
-    "impact":     "anton",       # por si llega en minusculas
+    "Poppins":    "poppins",    # Poppins.ttf esta en fonts/ — usar directamente
+    "Arial":      "anton",      # Arial no existe en Linux → fallback Anton
+    "impact":     "anton",      # por si llega en minusculas
 }
 
 
@@ -339,8 +338,10 @@ def procesar_podcast(
                 threads=4,
                 logger=None,
             )
-            clip.close()
-            final.close()
+            # NO cerrar clip ni final aqui: comparten el reader FFMPEG de video (el padre).
+            # Cerrar un subclip dentro del loop mata el reader compartido y rompe los
+            # siguientes clips con "'NoneType' has no attribute 'stdout'".
+            # video.close() se llama UNA sola vez al salir del loop (ver abajo).
             rutas_generadas.append(os.path.abspath(output_path))
 
         except Exception as e:

@@ -60,6 +60,25 @@ def _setup_cookies() -> str:
 _setup_cookies()
 
 
+def _precargar_modulos_podcast():
+    """
+    Importa camara y subtitulos durante el warmup del worker (ANTES de recibir jobs).
+    Así MediaPipe, torch y la verificación de fuentes ocurren fuera del executionTimeout.
+    """
+    try:
+        import camara       # inicializa MediaPipe FaceDetection + carga torch
+        print("✅ [preload] camara OK")
+    except Exception as e:
+        print(f"⚠️ [preload] camara: {e}")
+    try:
+        import subtitulos   # verifica fuentes locales (sin red)
+        print("✅ [preload] subtitulos OK")
+    except Exception as e:
+        print(f"⚠️ [preload] subtitulos: {e}")
+
+_precargar_modulos_podcast()
+
+
 def _duracion_video(url: str) -> float | None:
     """
     Obtiene la duración en segundos SIN descargar el video completo.

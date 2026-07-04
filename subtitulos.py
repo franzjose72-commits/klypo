@@ -6,35 +6,29 @@ from PIL import Image, ImageDraw, ImageFont
 _RAIZ = os.path.dirname(os.path.abspath(__file__))
 _FONTS_DIR = os.path.join(_RAIZ, "fonts")
 
-def descargar_montserrat():
-    os.makedirs(_FONTS_DIR, exist_ok=True)
-    path = os.path.join(_FONTS_DIR, "MontserratBlack.ttf")
-    if os.path.exists(path):
-        return path
-    try:
-        import requests
-        url = "https://github.com/JulietaUla/Montserrat/raw/master/fonts/ttf/Montserrat-Black.ttf"
-        # timeout=(connect, read): ambos limitados a 15s para no colgar la importación
-        r = requests.get(url, timeout=(15, 15), stream=False)
-        if r.status_code == 200:
-            with open(path, "wb") as f:
-                f.write(r.content)
-            print(f"✅ Montserrat Black descargada → {path}")
-            return path
-    except Exception as e:
-        print(f"⚠️ Descarga Montserrat fallida: {e}")
-    return None
+def _verificar_fuente(nombre_archivo: str) -> "str | None":
+    """Devuelve la ruta absoluta del archivo si existe en fonts/, o None. Sin red."""
+    path = os.path.join(_FONTS_DIR, nombre_archivo)
+    return path if os.path.exists(path) else None
 
-_montserrat_path = descargar_montserrat()
+# Verificar que MontserratBlack.ttf esté disponible (viene del Dockerfile COPY fonts/)
+# NUNCA descarga de internet — si falta, usar Montserrat.ttf como fallback local
+_montserrat_path = (
+    _verificar_fuente("MontserratBlack.ttf")
+    or _verificar_fuente("Montserrat.ttf")
+)
+if not _montserrat_path:
+    print("⚠️ subtitulos: no se encontró fuente Montserrat en fonts/")
 
 _FUENTES_MAP = {
     "montserrat": [
         os.path.join(_FONTS_DIR, "MontserratBlack.ttf"),
         os.path.join(_FONTS_DIR, "Montserrat.ttf"),
     ],
-    "anton":  [os.path.join(_FONTS_DIR, "Anton.ttf")],
-    "bebas":  [os.path.join(_FONTS_DIR, "BebasNeue.ttf")],
-    "impact": [os.path.join(_FONTS_DIR, "MontserratBlack.ttf")],  # fallback Linux
+    "poppins":    [os.path.join(_FONTS_DIR, "Poppins.ttf")],
+    "anton":      [os.path.join(_FONTS_DIR, "Anton.ttf")],
+    "bebas":      [os.path.join(_FONTS_DIR, "BebasNeue.ttf")],
+    "impact":     [os.path.join(_FONTS_DIR, "MontserratBlack.ttf")],
 }
 _FALLBACKS = [
     os.path.join(_FONTS_DIR, "Anton.ttf"),
