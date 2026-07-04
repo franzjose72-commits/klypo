@@ -245,28 +245,35 @@ def estado(job_id: str):
         job["progreso"] = "🕐 En cola en RunPod..."
 
     elif runpod_status == "IN_PROGRESS":
-        # Recoger clips parciales que el generator handler ya haya yielded
+        # /stream es best-effort para mostrar progreso en vivo.
+        # Timeout corto (5s) para no bloquear el polling cada 5s del frontend.
+        # Si falla → silencio; los clips finales llegan garantizados al COMPLETED.
         try:
             s_resp = _req.get(
                 f"{RUNPOD_BASE}/stream/{job_id}",
                 headers=_headers(),
-                timeout=10,
+                timeout=5,
             )
             if s_resp.ok:
                 stream_raw = s_resp.json()
-                # RunPod puede devolver lista directa o {"stream": [...]}
                 items  = stream_raw if isinstance(stream_raw, list) else stream_raw.get("stream", [])
                 urls_s = set(job["clips"])
                 for si in items:
-                    output = si.get("output", {}) if isinstance(si, dict) else {}
-                    for clip in output.get("clips", []):
+                    if not isinstance(si, dict):
+                        continue
+                    # Formato A: {"output": {...}, "status": "..."}
+                    # Formato B: yield crudo {"clips": [...]}
+                    raw = si.get("output") if "output" in si else si
+                    if not isinstance(raw, dict):
+                        raw = si
+                    for clip in raw.get("clips", []):
                         url = clip.get("url") if isinstance(clip, dict) else None
                         if url and url not in urls_s:
                             urls_s.add(url)
                             job["clips"].append(url)
                             job["clips_detalle"].append(clip)
-        except Exception as _se:
-            print(f"⚠️ Stream fetch (job {job_id}): {_se}")
+        except Exception:
+            pass  # best-effort — timeout o error no interrumpe el polling
         n = len(job["clips"])
         job["progreso"] = (
             f"⚙️ Generando clips... {n} clip{'s' if n != 1 else ''} "
@@ -275,35 +282,47 @@ def estado(job_id: str):
         )
 
     elif runpod_status == "COMPLETED":
-        output = data.get("output") or {}
+        # El último yield del generator tiene TODOS los clips en clips_resultado.
+        # data.get("output") viene del /status (ya fetched), no del /stream.
+        # Si RunPod lo devuelve como lista de yields → escaneamos todos.
+        # Si lo devuelve como el dict del último yield → lo usamos directo.
+        raw_output = data.get("output") or {}
+        print(f"🔍 COMPLETED raw_output type={type(raw_output).__name__} "
+              f"len={len(raw_output) if isinstance(raw_output, (list, dict)) else '?'}")
 
-        # Generator handler devuelve lista de todos los yields;
-        # el último item tiene el estado final con todos los clips.
-        if isinstance(output, list):
-            output = output[-1] if output else {}
+        output_items = raw_output if isinstance(raw_output, list) else [raw_output]
 
-        if "error" in output:
-            job["estado"]   = "error"
-            job["error"]    = output["error"]
-            job["progreso"] = f"❌ Error en RunPod: {output['error']}"
-
-        else:
-            clips_raw = output.get("clips", [])
-            # Acumular sin duplicar: algunos clips ya llegaron via /stream/ en IN_PROGRESS
-            urls_existentes = set(job["clips"])
-            for c in clips_raw:
+        urls_acum = set(job["clips"])  # clips parciales ya recogidos del /stream/
+        error_msg = ""
+        for item in output_items:
+            if not isinstance(item, dict):
+                continue
+            raw = item.get("output") if "output" in item else item
+            if not isinstance(raw, dict):
+                raw = item
+            if "error" in raw and not error_msg:
+                error_msg = raw["error"]
+            for c in raw.get("clips", []):
                 url = c.get("url") if isinstance(c, dict) else None
-                if url and url not in urls_existentes:
-                    urls_existentes.add(url)
+                if url and url not in urls_acum:
+                    urls_acum.add(url)
                     job["clips"].append(url)
                     job["clips_detalle"].append(c)
 
-            n = len(job["clips"])
+        n = len(job["clips"])
+        print(f"🔍 COMPLETED: {n} clips en job tras escanear output "
+              f"({len(output_items)} items, error_msg={error_msg!r})")
+
+        if n > 0:
             job["estado"]   = "listo"
             job["progreso"] = (
                 f"✅ {n} clip{'s' if n != 1 else ''} "
                 f"{'listos' if n != 1 else 'listo'} para descargar"
             )
+        else:
+            job["estado"]   = "error"
+            job["error"]    = error_msg or "No se generaron clips"
+            job["progreso"] = f"❌ {job['error']}"
 
     elif runpod_status in ("FAILED", "CANCELLED", "TIMED_OUT"):
         # Intentar extraer mensaje de error de donde RunPod lo ponga
