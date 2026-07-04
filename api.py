@@ -20,7 +20,6 @@ Variables de entorno requeridas (.env):
 
 import os
 import sys
-import uuid
 import traceback
 
 import requests as _req
@@ -145,17 +144,19 @@ def generar(req: SolicitudClip):
     if not runpod_job_id:
         raise HTTPException(502, f"RunPod no devolvio job ID: {data}")
 
-    job_id = str(uuid.uuid4())
+    # Usar el ID de RunPod directamente como job_id publico.
+    # Asi /estado/{job_id} puede consultar RunPod aunque el dict en memoria
+    # se haya vaciado por un --reload o reinicio del servidor.
+    job_id = runpod_job_id
     jobs[job_id] = {
         "estado":        "en_cola",
         "progreso":      "🕐 Job enviado a RunPod — en cola...",
         "clips":         [],
         "clips_detalle": [],
         "error":         "",
-        "runpod_job_id": runpod_job_id,
     }
 
-    print(f"✅ Job creado: interno={job_id}  RunPod={runpod_job_id}")
+    print(f"✅ Job creado: RunPod={job_id}")
     return {"job_id": job_id, "mensaje": "Procesamiento enviado a RunPod"}
 
 
@@ -174,35 +175,45 @@ def estado(job_id: str):
         "error":    "mensaje de error si aplica"
       }
     """
-    if job_id not in jobs:
-        raise HTTPException(404, "Job no encontrado")
+    job = jobs.get(job_id)
 
-    job = jobs[job_id]
-
-    # Si ya terminó, devolver resultado cacheado sin volver a llamar a RunPod
-    if job["estado"] in ("listo", "error"):
+    # Si ya terminó con resultado cacheado, devolver sin llamar a RunPod
+    if job and job["estado"] in ("listo", "error"):
         return job
 
-    runpod_job_id = job.get("runpod_job_id")
-    if not runpod_job_id:
-        return job  # Job sin RunPod (no deberia ocurrir en produccion)
-
-    # Consultar estado en RunPod
+    # Consultar RunPod directamente — job_id ES el runpod_job_id.
+    # Funciona aunque jobs este vacio (--reload, reinicio del servidor).
     try:
         resp = _req.get(
-            f"{RUNPOD_BASE}/status/{runpod_job_id}",
+            f"{RUNPOD_BASE}/status/{job_id}",
             headers = _headers(),
             timeout = 15,
         )
         resp.raise_for_status()
         data = resp.json()
     except _req.exceptions.RequestException as e:
-        # Error de red transitorio: no actualizar estado, devolver ultimo conocido
-        print(f"⚠️  RunPod status error (job {job_id}): {e}")
-        return job
+        if job:
+            # Error de red transitorio: devolver ultimo estado conocido del cache
+            print(f"⚠️  RunPod status error (job {job_id}): {e}")
+            return job
+        raise HTTPException(503, f"No se pudo consultar RunPod: {e}")
 
     runpod_status = data.get("status", "")
-    job["estado"]  = _ESTADO.get(runpod_status, "en_cola")
+    if not runpod_status:
+        raise HTTPException(404, f"Job '{job_id}' no existe en RunPod")
+
+    # Reconstruir entrada en cache si se perdio por reinicio del servidor
+    if job is None:
+        job = {
+            "estado":        "en_cola",
+            "progreso":      "",
+            "clips":         [],
+            "clips_detalle": [],
+            "error":         "",
+        }
+        jobs[job_id] = job
+
+    job["estado"] = _ESTADO.get(runpod_status, "en_cola")
 
     if runpod_status == "IN_QUEUE":
         job["progreso"] = "🕐 En cola en RunPod..."

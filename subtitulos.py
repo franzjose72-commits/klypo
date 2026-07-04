@@ -61,9 +61,11 @@ def agregar_subtitulos(clip, words_con_timestamps, fuente="montserrat", modo="ka
     except Exception:
         w_clip, h_clip = clip.size
 
-    scale   = h_clip / 1080
-    FS_BASE = max(52, round(65 * scale))
-    FS_ACT  = max(60, round(75 * scale))
+    # Escalar por ANCHO, no por alto: en clips 9:16 (1080x1920) el ancho es
+    # la dimension limitante para texto. Usar h_clip/1080 da scale=1.78 → fuentes de 116px.
+    scale   = w_clip / 1080
+    FS_BASE = max(42, round(65 * scale))
+    FS_ACT  = max(50, round(75 * scale))
 
     COLOR_BLANCO   = (255, 255, 255)
     COLOR_AMARILLO = (255, 255, 0)

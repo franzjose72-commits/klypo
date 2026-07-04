@@ -92,14 +92,30 @@ def _descargar_podcast(url: str) -> str:
     ]
 
     estrategias = [
-        {"nombre": "android (sin cookies, 480p)",
-         "client": "android", "formato": "18/best[ext=mp4]/best",               "cookies": False},
-        {"nombre": "tv (con cookies)",
-         "client": "tv",      "formato": "bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/b",  "cookies": True},
-        {"nombre": "ios (sin cookies)",
-         "client": "ios",     "formato": "best[ext=mp4]/best",                  "cookies": False},
-        {"nombre": "web+bgutil (con cookies)",
-         "client": "web",     "formato": "bv*+ba/b",                            "cookies": True},
+        {
+            "nombre":  "tv (con cookies, hasta 1080p)",
+            "client":  "tv",
+            "formato": "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/bv*[height<=1080]+ba/b",
+            "cookies": True,
+        },
+        {
+            "nombre":  "web+bgutil (con cookies, hasta 1080p)",
+            "client":  "web",
+            "formato": "bv*[height<=1080]+ba/b",
+            "cookies": True,
+        },
+        {
+            "nombre":  "ios (sin cookies)",
+            "client":  "ios",
+            "formato": "best[height<=1080][ext=mp4]/best[ext=mp4]/best",
+            "cookies": False,
+        },
+        {
+            "nombre":  "android (sin cookies, 480p fallback)",
+            "client":  "android",
+            "formato": "18/best[ext=mp4]/best",
+            "cookies": False,
+        },
     ]
 
     errores = []
@@ -333,6 +349,7 @@ def procesar_podcast(
             final.write_videofile(
                 output_path,
                 codec="libx264",
+                audio_codec="aac",
                 fps=24,
                 ffmpeg_params=["-preset", "ultrafast"],
                 threads=4,
