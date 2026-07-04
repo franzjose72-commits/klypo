@@ -121,6 +121,17 @@ def handler(event):
     modo_sub   = inp.get("modo_sub",   "bloques").strip().lower()
     modo       = inp.get("modo",       "viral").strip().lower()
 
+    # Normalizar variantes del modo por si el frontend manda valores distintos
+    _MODO_ALIAS = {
+        "viral":        "viral",
+        "clipsvirales": "viral",
+        "clips_virales":"viral",
+        "clipsviral":   "viral",
+        "clips":        "viral",
+        "podcast":      "podcast",
+    }
+    modo = _MODO_ALIAS.get(modo, modo)
+
     # ── Validación de entrada ─────────────────────────────────────────────────
     if not url:
         return {"error": "Falta el campo 'url' en el input"}
