@@ -191,10 +191,35 @@ def estado(job_id: str):
         )
         resp.raise_for_status()
         data = resp.json()
-    except _req.exceptions.RequestException as e:
+
+    except _req.exceptions.HTTPError as http_err:
+        # Error HTTP de RunPod (404, 500, etc.) — distinto de error de red
+        code = http_err.response.status_code if http_err.response is not None else 0
+        if code == 404:
+            # RunPod ya no tiene el job: expiró después de completarse.
+            if job and job.get("clips"):
+                # Tenemos los clips de un polling COMPLETED anterior → devolver listo
+                job["estado"]   = "listo"
+                job["progreso"] = f"✅ {len(job['clips'])} clip(s) listos para descargar"
+                return job
+            # Job expiró sin que hubiéramos capturado el resultado
+            err = "Job expirado en RunPod sin resultado disponible. Vuelve a enviar el video."
+            if job:
+                job["estado"]   = "error"
+                job["error"]    = err
+                job["progreso"] = f"❌ {err}"
+                return job
+            raise HTTPException(404, err)
+        # Otro error HTTP (500, etc.) — devolver último estado o propagar
+        print(f"⚠️  RunPod HTTP {code} (job {job_id}): {http_err}")
         if job:
-            # Error de red transitorio: devolver ultimo estado conocido del cache
-            print(f"⚠️  RunPod status error (job {job_id}): {e}")
+            return job
+        raise HTTPException(502, f"Error HTTP de RunPod ({code})")
+
+    except _req.exceptions.RequestException as e:
+        # Error de red transitorio (timeout, conexión): devolver último estado conocido
+        print(f"⚠️  RunPod status error (job {job_id}): {e}")
+        if job:
             return job
         raise HTTPException(503, f"No se pudo consultar RunPod: {e}")
 

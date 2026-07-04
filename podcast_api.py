@@ -15,6 +15,7 @@ import json
 import re
 import subprocess
 import unicodedata
+import cv2
 
 _RAIZ = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_RAIZ, "modulos_virales"))
@@ -330,6 +331,20 @@ def procesar_podcast(
 
             # Reencuadre 9:16 con deteccion de caras y VAD (nero_reframe abre su propio lector)
             final = nero_reframe(video_path, clip, inicio, fin)
+
+            # nero_reframe recorta los frames a 9:16 (p.ej. 607×1080 para fuente 1920×1080)
+            # pero clip.size queda en las dimensiones originales (1920×1080).
+            # FFMPEG recibe metadata incorrecta → coloca el recorte en una caja más grande
+            # con barras negras por todos los lados.
+            # Fix: escalar a 1080×1920 estándar y corregir el metadata del clip.
+            def _escalar_1080x1920(get_frame, t):
+                f = get_frame(t)
+                h, w = f.shape[:2]
+                if w == 1080 and h == 1920:
+                    return f
+                return cv2.resize(f, (1080, 1920), interpolation=cv2.INTER_LINEAR)
+            final = final.transform(_escalar_1080x1920)
+            final.size = (1080, 1920)
 
             if words_sub and con_subs:
                 final = agregar_subtitulos(final, words_sub, fuente=fuente_interna, modo=modo_sub)
