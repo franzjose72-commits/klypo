@@ -269,30 +269,63 @@ def handler(event):
                 return
 
         else:
-            # Viral: motor_viral.py NO se toca — devuelve todas las rutas juntas
-            from motor_viral import procesar_viral
-            rutas = procesar_viral(
-                url,
-                fuente_sub = fuente_sub,
-                mayusculas = mayusculas,
-                modo_sub   = modo_sub,
-            )
+            # Viral: clip_listo_cb ya existe en motor_viral.py — usarlo para
+            # subir + yield cada clip en tiempo real (mismo patrón que podcast)
+            import queue as _queue_v
+            import threading as _threading_v
 
-            if len(rutas) > MAX_CLIPS:
-                print(f"⚠️ {len(rutas)} clips generados — limitando a {MAX_CLIPS}")
-                rutas = rutas[:MAX_CLIPS]
+            cola_viral  = _queue_v.Queue()
+            error_viral = [None]
 
-            for ruta in rutas:
-                nombre = os.path.basename(ruta)
+            def _on_clip_viral(local_path):
+                cola_viral.put(local_path)
+
+            def _run_viral():
                 try:
-                    r2_url = subir_clip_r2(ruta, nombre)
+                    from motor_viral import procesar_viral
+                    procesar_viral(
+                        url,
+                        fuente_sub    = fuente_sub,
+                        mayusculas    = mayusculas,
+                        modo_sub      = modo_sub,
+                        clip_listo_cb = _on_clip_viral,
+                    )
+                except Exception as e:
+                    error_viral[0] = e
+                    print(f"❌ Error en hilo viral: {e}")
+                    traceback.print_exc()
+                finally:
+                    cola_viral.put(None)  # sentinel
+
+            hilo_viral = _threading_v.Thread(target=_run_viral, daemon=True)
+            hilo_viral.start()
+
+            while len(clips_resultado) < MAX_CLIPS:
+                try:
+                    local_path = cola_viral.get(timeout=900)
+                except _queue_v.Empty:
+                    print("⚠️ Timeout: sin nuevo clip viral en 15 min")
+                    break
+
+                if local_path is None:
+                    break
+
+                nombre = os.path.basename(local_path)
+                try:
+                    r2_url = subir_clip_r2(local_path, nombre)
                     if r2_url:
-                        clip_item = {"url": r2_url, "nombre": nombre, "local": ruta}
+                        clip_item = {"url": r2_url, "nombre": nombre, "local": local_path}
                         clips_resultado.append(clip_item)
-                        yield {"clips": [clip_item]}  # un yield por clip viral
-                        print(f"📤 Clip viral {len(clips_resultado)}/{len(rutas)}: {r2_url}")
+                        yield {"clips": [clip_item]}
+                        print(f"📤 Clip viral {len(clips_resultado)}: {r2_url}")
                 except Exception as e_sub:
                     print(f"⚠️ Error subiendo clip viral '{nombre}': {e_sub}")
+
+            hilo_viral.join(timeout=30)
+
+            if error_viral[0] and not clips_resultado:
+                yield {"error": str(error_viral[0]), "traceback": traceback.format_exc()}
+                return
 
         print(f"✅ {len(clips_resultado)} clips totales")
         yield {
