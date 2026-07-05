@@ -371,6 +371,59 @@ def presigned_upload(filename: str = Query(..., description="Nombre del archivo 
     return resultado   # {put_url, public_url, key}
 
 
+@app.get("/clips-parciales/{job_id}")
+def clips_parciales(job_id: str):
+    """
+    Lista los clips ya subidos a R2 con el prefijo job_id/.
+    El frontend lo llama cada 5s durante procesamiento para mostrar clips en tiempo real,
+    sin depender del /stream de RunPod (que da timeout cuando el worker está ocupado).
+    Siempre devuelve {"clips": []} ante cualquier error — nunca rompe el polling.
+    """
+    if not job_id or not job_id.strip():
+        return {"clips": []}
+    try:
+        import boto3.session as b3s
+        from botocore.config import Config as _Cfg
+        from subir_r2 import _limpiar_proxy, _restaurar_proxy
+
+        access_key = os.environ.get("R2_ACCESS_KEY_ID",     "").strip()
+        secret_key = os.environ.get("R2_SECRET_ACCESS_KEY", "").strip()
+        endpoint   = os.environ.get("R2_ENDPOINT",          "").strip()
+        bucket     = os.environ.get("R2_BUCKET", "klypo-clips").strip()
+        r2_public  = os.environ.get("R2_PUBLIC_URL", "").strip().rstrip("/")
+
+        if not all([access_key, secret_key, endpoint, r2_public]):
+            return {"clips": []}
+
+        guardadas = _limpiar_proxy()
+        try:
+            s3 = b3s.Session().client(
+                "s3",
+                endpoint_url          = endpoint,
+                aws_access_key_id     = access_key,
+                aws_secret_access_key = secret_key,
+                region_name           = "auto",
+                config                = _Cfg(
+                    signature_version = "s3v4",
+                    proxies           = {"http": "", "https": ""},
+                    s3                = {"addressing_style": "path"},
+                ),
+            )
+            resp  = s3.list_objects_v2(Bucket=bucket, Prefix=f"{job_id}/")
+            clips = [
+                f"{r2_public}/{obj['Key']}"
+                for obj in resp.get("Contents", [])
+                if obj["Key"].lower().endswith(".mp4")
+            ]
+            return {"clips": clips}
+        finally:
+            _restaurar_proxy(guardadas)
+
+    except Exception as e:
+        print(f"⚠️ /clips-parciales/{job_id}: {e}")
+        return {"clips": []}
+
+
 @app.get("/download/{path:path}")
 def download(path: str):
     """

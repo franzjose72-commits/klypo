@@ -167,6 +167,9 @@ def handler(event):
     }
     modo = _MODO_ALIAS.get(modo, modo)
 
+    # ID del job en RunPod — se usa como prefijo en R2 para aislar clips por job
+    job_id_prefix = event.get("id", "").strip()
+
     # ── Validación de entrada ─────────────────────────────────────────────────
     if not url:
         return {"error": "Falta el campo 'url' en el input"}
@@ -253,7 +256,7 @@ def handler(event):
 
                 nombre = os.path.basename(local_path)
                 try:
-                    r2_url = subir_clip_r2(local_path, nombre)
+                    r2_url = subir_clip_r2(local_path, nombre, prefix=job_id_prefix)
                     if r2_url:
                         clip_item = {"url": r2_url, "nombre": nombre, "local": local_path}
                         clips_resultado.append(clip_item)
@@ -312,7 +315,7 @@ def handler(event):
 
                 nombre = os.path.basename(local_path)
                 try:
-                    r2_url = subir_clip_r2(local_path, nombre)
+                    r2_url = subir_clip_r2(local_path, nombre, prefix=job_id_prefix)
                     if r2_url:
                         clip_item = {"url": r2_url, "nombre": nombre, "local": local_path}
                         clips_resultado.append(clip_item)

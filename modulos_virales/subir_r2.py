@@ -252,7 +252,7 @@ def generar_presigned_put(nombre_archivo: str) -> "dict | None":
         _restaurar_proxy(guardadas)
 
 
-def subir_clip_r2(ruta_local: str, nombre_archivo: str) -> "str | None":
+def subir_clip_r2(ruta_local: str, nombre_archivo: str, prefix: str = "") -> "str | None":
     """
     Sube un clip a Cloudflare R2 usando curl para el PUT.
     Devuelve URL firmada valida 7 dias, o None si falla definitivamente.
@@ -282,6 +282,8 @@ def subir_clip_r2(ruta_local: str, nombre_archivo: str) -> "str | None":
     clave_r2          = _sanitizar_clave_r2(clave_r2_original)
     if clave_r2 != clave_r2_original:
         print(f"   🔤 Nombre sanitizado: '{clave_r2_original}' → '{clave_r2}'")
+    if prefix:
+        clave_r2 = f"{prefix}/{clave_r2}"
     print(f"\n📤 R2: {clave_r2}")
 
     _log_proxy("ANTES-limpiar")
