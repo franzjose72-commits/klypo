@@ -30,6 +30,12 @@ sys.path.insert(0, os.path.join(_RAIZ, "modulos_virales"))
 MAX_CLIPS   = 15
 MAX_DUR_SEG = 7200  # 2 horas
 
+# ── Apify (descarga YouTube en 1080p) ─────────────────────────────────────────
+# Pon tu token en RunPod → endpoint → Environment Variables → APIFY_TOKEN
+APIFY_TOKEN  = os.environ.get("APIFY_TOKEN", "").strip()
+_APIFY_ACTOR = "UUhJDfKJT2SsXdclR"   # streamers/youtube-video-downloader
+_APIFY_BASE  = "https://api.apify.com/v2"
+
 # ── Cookies de YouTube ────────────────────────────────────────────────────────
 
 def _setup_cookies() -> str:
@@ -114,6 +120,107 @@ def _descargar_directo(url: str, dest: str) -> str:
     return dest
 
 
+def _descargar_via_apify(youtube_url: str, dest: str) -> str:
+    """
+    Descarga un video de YouTube via Apify (streamers/youtube-video-downloader).
+    Devuelve la ruta local del archivo descargado.
+    Lanza RuntimeError con mensaje en español si algo falla.
+
+    Flujo:
+      1. POST /runs → arranca el actor y recibe run_id
+      2. Polling GET /actor-runs/{run_id} cada 15s hasta SUCCEEDED o FAILED (max 20 min)
+      3. GET /actor-runs/{run_id}/dataset/items → extrae downloadedFileUrl
+      4. Descarga el MP4 con _descargar_directo() (función ya existente)
+    """
+    import time as _time
+
+    if not APIFY_TOKEN:
+        raise RuntimeError(
+            "APIFY_TOKEN no está configurado. "
+            "Agrégalo en RunPod → tu endpoint → Environment Variables → APIFY_TOKEN."
+        )
+
+    print(f"🎬 Apify: solicitando descarga de {youtube_url[:70]}...")
+
+    # 1. Arrancar el run del actor
+    try:
+        run_resp = requests.post(
+            f"{_APIFY_BASE}/acts/{_APIFY_ACTOR}/runs",
+            params  = {"token": APIFY_TOKEN},
+            json    = {
+                "videos":                [{"url": youtube_url}],
+                "preferredQuality":      "1080p",
+                "preferredFormat":       "mp4",
+                "storeInKVStore":        False,
+                "filenameTemplateParts": ["title"],
+            },
+            timeout = 30,
+        )
+        run_resp.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"No se pudo conectar con Apify para iniciar la descarga: {e}")
+
+    run_id = run_resp.json().get("data", {}).get("id", "")
+    if not run_id:
+        raise RuntimeError(f"Apify no devolvió un ID de run. Respuesta: {run_resp.text[:200]}")
+    print(f"   ✅ Run iniciado: {run_id}")
+
+    # 2. Polling: esperar hasta SUCCEEDED o FAILED (max 80 intentos × 15s = 20 min)
+    status = ""
+    for intento in range(1, 81):
+        _time.sleep(15)
+        try:
+            st_resp = requests.get(
+                f"{_APIFY_BASE}/actor-runs/{run_id}",
+                params  = {"token": APIFY_TOKEN},
+                timeout = 30,
+            )
+            st_resp.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            print(f"   ⚠️ Apify polling error (intento {intento}): {e}")
+            continue
+
+        status = st_resp.json().get("data", {}).get("status", "")
+        print(f"   ⏳ Apify [{intento}/80]: {status}")
+
+        if status == "SUCCEEDED":
+            break
+        if status in ("FAILED", "TIMED-OUT", "ABORTED"):
+            raise RuntimeError(
+                f"Apify no pudo descargar el video (estado: {status}). "
+                "El video puede ser privado, age-restricted, o la URL no es válida."
+            )
+    else:
+        raise RuntimeError("Timeout de 20 minutos esperando que Apify termine la descarga.")
+
+    # 3. Obtener dataset items para extraer downloadedFileUrl
+    try:
+        items_resp = requests.get(
+            f"{_APIFY_BASE}/actor-runs/{run_id}/dataset/items",
+            params  = {"token": APIFY_TOKEN},
+            timeout = 30,
+        )
+        items_resp.raise_for_status()
+        items = items_resp.json()
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"No se pudo obtener el resultado de Apify: {e}")
+
+    if not items or not isinstance(items, list):
+        raise RuntimeError("Apify completó pero el dataset está vacío.")
+
+    file_url = items[0].get("downloadedFileUrl", "")
+    if not file_url:
+        raise RuntimeError(
+            f"Apify no devolvió 'downloadedFileUrl' en el resultado. "
+            f"Item recibido: {str(items[0])[:200]}"
+        )
+
+    print(f"   🔗 Apify URL: {file_url[:80]}...")
+
+    # 4. Descargar el MP4 usando la función ya existente
+    return _descargar_directo(file_url, dest)
+
+
 def _duracion_video(url: str) -> float | None:
     """
     Obtiene la duración en segundos SIN descargar el video completo.
@@ -174,11 +281,19 @@ def handler(event):
     if not url:
         return {"error": "Falta el campo 'url' en el input"}
 
-    # ── Descarga directa para videos subidos por el usuario (no YouTube) ──────
-    # Si la URL es de R2 u otro CDN (no YouTube), descargamos el archivo localmente
-    # antes de pasarlo a procesar_viral / procesar_podcast.
-    # Ambos modos aceptan rutas locales, por lo que el resto del pipeline no cambia.
-    if url.startswith("http") and not _es_youtube(url):
+    # ── Pre-descarga: convierte cualquier URL a ruta local antes de procesar ─────
+    # Ambos modos (viral y podcast) aceptan rutas locales sin cambio alguno.
+    if url.startswith("http") and _es_youtube(url):
+        # YouTube: descarga via Apify en 1080p (reemplaza yt-dlp que daba 480p)
+        dest_apify = os.path.join(_RAIZ, "video_apify.mp4")
+        try:
+            url = _descargar_via_apify(url, dest_apify)
+        except Exception as e:
+            print(f"❌ Apify error: {e}")
+            return {"error": str(e)}
+
+    elif url.startswith("http"):
+        # Video subido por el usuario (R2, CDN, etc.): descarga directa sin cambios
         dest_directo = os.path.join(_RAIZ, "video_directo.mp4")
         try:
             url = _descargar_directo(url, dest_directo)
