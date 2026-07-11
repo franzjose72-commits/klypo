@@ -126,10 +126,10 @@ def agregar_subtitulos(clip, words_con_timestamps):
         except:
             return len(txt) * FS_BASE // 2, FS_BASE
 
-    # Grupos de máximo 2 palabras con sus timestamps
+    # Grupos de máximo 3 palabras con sus timestamps
     grupos = []
-    for i in range(0, len(words_con_timestamps), 2):
-        g = words_con_timestamps[i:i + 2]
+    for i in range(0, len(words_con_timestamps), 3):
+        g = words_con_timestamps[i:i + 3]
         grupos.append({"palabras": g, "t_ini": g[0]["start"], "t_fin": g[-1]["end"]})
 
     # Pre-reducir FS_BASE/FS_ACT hasta que NINGÚN grupo supere el 88% del ancho
@@ -209,10 +209,11 @@ def agregar_subtitulos(clip, words_con_timestamps):
         for ii, txt in enumerate(textos):
             color = COLOR_AMARILLO if ii == activa_idx else COLOR_BLANCO
             ya    = y0 + max(0, (alto - altos[ii]) // 2)
-            # Stroke negro sólido 6px — sin sombra, sin blur
-            draw.text((x, ya), txt, font=fnts[ii],
-                      fill=COLOR_NEGRO, stroke_width=6, stroke_fill=COLOR_NEGRO)
-            draw.text((x, ya), txt, font=fnts[ii], fill=color)
+            # Sombra paralela descentrada
+            draw.text((x + 5, ya + 5), txt, font=fnts[ii], fill=COLOR_NEGRO)
+            # Stroke negro 8px + relleno color (PIL dibuja stroke detrás del fill)
+            draw.text((x, ya), txt, font=fnts[ii], fill=color,
+                      stroke_width=8, stroke_fill=COLOR_NEGRO)
             x += anchos[ii] + gap
 
         return np.array(img)   # RGB de vuelta a MoviePy

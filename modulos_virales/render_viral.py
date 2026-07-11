@@ -1,5 +1,5 @@
 """
-KLYPO VIRAL — Renderizado V46
+KLYPO VIRAL — Renderizado V47
 9:16 vertical | Zoom auto | Subtítulos configurables (karaoke / bloques / none)
 
 Flujo de 3 pasos:
@@ -25,8 +25,8 @@ TARGET_H      = 1920   # 9:16 vertical
 
 # ─── Subtítulos ───────────────────────────────────────────────────────────────
 SUB_TAMANO       = 54             # antes 82 — tamaño tipo caption natural
-SUB_PRIMARY      = "&H00FFFFFF"   # blanco: palabra hablada
-SUB_SECONDARY    = "&HFF000000"   # totalmente transparente: palabras futuras invisibles
+SUB_PRIMARY      = "&H00FFFFFF"   # blanco: color base del estilo (bloques usa esto directamente)
+SUB_SECONDARY    = "&H00FFFFFF"   # blanco: color base antes del relleno karaoke
 SUB_BORDE        = "&H00000000"   # negro
 SUB_OUTLINE      = 2
 SUB_SHADOW       = 1              # sombra suave para profundidad
@@ -112,8 +112,8 @@ def _agrupar_palabras(words):
                 actual = []
                 continue
 
-        # REGLA 3 — máximo 4 palabras
-        if len(actual) >= 4:
+        # REGLA 3 — máximo 3 palabras (karaoke style)
+        if len(actual) >= 3:
             grupos.append(actual)
             actual = []
 
@@ -348,8 +348,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
         grupos = _reubicar_colgantes(grupos)
         print(f"   📝 Palabras entrada: {len(words)} | Palabras en grupos: {sum(len(g) for g in grupos)}")
 
+        _POP_SIZE    = int(SUB_TAMANO * 1.15)  # tamaño pico del pop (15% más grande)
+        _POP_RISE_MS = 60                        # ms para llegar al pico
+        _POP_FALL_MS = 100                       # ms para volver al tamaño base
+
         for idx, grupo in enumerate(grupos):
-            pos = f"{{\\pos({TARGET_W//2},{py})}}"
+            # karaoke: amarillo (\1c), negrita (\b1), borde grueso (\bord8), sombra (\shad4)
+            pos = f"{{\\pos({TARGET_W//2},{py})\\fs{SUB_TAMANO}\\1c&H0000FFFF&\\b1\\bord8\\shad4}}"
             t0 = grupo[0]["start"]
             t1_natural = grupo[-1]["end"] + 0.05
             if idx + 1 < len(grupos):
@@ -357,13 +362,23 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
             else:
                 t1 = t1_natural
             partes = []
+            cum_cs = 0  # centisegundos acumulados desde t0, para calcular tiempos absolutos de \t()
             for j, w in enumerate(grupo):
                 if j < len(grupo) - 1:
                     dur_cs = max(1, int((grupo[j + 1]["start"] - w["start"]) * 100))
                 else:
                     dur_cs = max(1, int((w["end"] - w["start"]) * 100))
-                txt = w["word"].strip().upper() if mayusculas else w["word"].strip()
-                partes.append(f"{{\\k{dur_cs}}}{txt}")
+                txt = w["word"].strip().upper()  # karaoke siempre en mayúsculas
+                w_start_ms = cum_cs * 10
+                peak_ms    = w_start_ms + _POP_RISE_MS
+                w_end_ms   = w_start_ms + dur_cs * 10
+                fall_ms    = min(peak_ms + _POP_FALL_MS, w_end_ms)
+                partes.append(
+                    f"{{\\kf{dur_cs}"
+                    f"\\t({w_start_ms},{peak_ms},\\fs{_POP_SIZE})"
+                    f"\\t({peak_ms},{fall_ms},\\fs{SUB_TAMANO})}}{txt}"
+                )
+                cum_cs += dur_cs
             lineas.append(f"Dialogue: 0,{_ass_t(t0)},{_ass_t(t1)},KLYPO,,0,0,0,,{pos}{' '.join(partes)}")
 
     with open(output_path, "w", encoding="utf-8") as f:
