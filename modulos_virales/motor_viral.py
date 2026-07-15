@@ -163,27 +163,30 @@ def _obtener_video(fuente):
 
 
 
-def _remap_words(words_global, segmentos_clip):
+def _remap_words(words_global, segmentos_clip, pre_contexto=0.0):
     """
     Remapea timestamps de palabras del video original al timeline del clip ensamblado.
     Los segmentos se procesan EN EL ORDEN DADO (pueden ser no cronológicos → hook-first).
+    pre_contexto: segundos extra añadidos ANTES del primer segmento en _armar_clip.
     """
     clip_words   = []
     clip_offset  = 0.0
 
-    for seg in segmentos_clip:
-        seg_ini = float(seg["inicio"])
-        seg_fin = float(seg["fin"])
-        seg_dur = seg_fin - seg_ini
+    for idx, seg in enumerate(segmentos_clip):
+        seg_ini_orig = float(seg["inicio"])
+        seg_fin      = float(seg["fin"])
+        # El primer segmento arranca `pre_contexto` segundos antes en el video real
+        actual_ini   = seg_ini_orig - (pre_contexto if idx == 0 else 0.0)
+        seg_dur      = seg_fin - actual_ini
 
         for w in words_global:
             w_s = float(w["start"])
             w_e = float(w["end"])
-            if w_s >= seg_ini - 0.05 and w_e <= seg_fin + 0.1:
+            if w_s >= actual_ini - 0.05 and w_e <= seg_fin + 0.1:
                 clip_words.append({
                     "word":    w["word"],
-                    "start":   clip_offset + max(0.0, w_s - seg_ini),
-                    "end":     clip_offset + min(w_e - seg_ini, seg_dur),
+                    "start":   clip_offset + max(0.0, w_s - actual_ini),
+                    "end":     clip_offset + min(w_e - actual_ini, seg_dur),
                     "new_seg": w.get("new_seg", False),
                 })
 
@@ -192,11 +195,13 @@ def _remap_words(words_global, segmentos_clip):
     return clip_words
 
 
+_PRE_CONTEXTO = 3.0  # segundos de contexto previo antes del primer segmento
+
 def _armar_clip(video, segmentos, duracion_total):
     """Corta y concatena los segmentos EN EL ORDEN DADO. Retorna VideoClip o None."""
     partes = []
-    for seg in segmentos:
-        ini = max(0.0, float(seg["inicio"]))
+    for idx, seg in enumerate(segmentos):
+        ini = max(0.0, float(seg["inicio"]) - (_PRE_CONTEXTO if idx == 0 else 0.0))
         fin = min(duracion_total, float(seg["fin"]))
         if fin - ini < 2.0:
             print(f"   ⚠️ Segmento {ini:.0f}s-{fin:.0f}s muy corto, saltado")
@@ -305,7 +310,7 @@ def procesar_viral(url, fuente_sub="Arial", mayusculas=False, modo_sub="bloques"
                 print(f"   ⚠️ No se pudo armar el clip.\n")
                 continue
 
-            words_clip = _remap_words(words_global, info["segmentos"]) if words_global else []
+            words_clip = _remap_words(words_global, info["segmentos"], pre_contexto=_PRE_CONTEXTO) if words_global else []
             print(f"   ⏱️  {clip.duration:.0f}s | {len(info['segmentos'])} seg | {len(words_clip)} palabras")
 
             nombre = _sanitizar(titulo) or f"clip_{i+1}"
