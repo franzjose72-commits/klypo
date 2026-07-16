@@ -215,6 +215,78 @@ def _armar_clip(video, segmentos, duracion_total):
     return mpy.concatenate_videoclips(partes) if len(partes) > 1 else partes[0]
 
 
+_ENCAJE_MIN = 30   # segundos mínimos tras encaje a oraciones
+_ENCAJE_MAX = 110  # segundos máximos tras encaje (clamp)
+
+def _encajar_a_oraciones(clips, words, duracion_total):
+    """
+    Ajusta inicio/fin de cada clip a límites de oración usando los timestamps de AssemblyAI.
+    - inicio: retrocede al inicio de la oración que lo contiene
+    - fin:    avanza al final de la oración que lo contiene, clampeado a _ENCAJE_MAX
+    - Descarta clips que queden < _ENCAJE_MIN tras el encaje
+    """
+    if not words:
+        return clips
+
+    # Construir fronteras [(ini_oracion, fin_oracion), ...]
+    fronteras = []
+    n = len(words)
+    for i, w in enumerate(words):
+        if w.get("new_seg") or i == 0:
+            s_ini = w["start"]
+            j = i + 1
+            while j < n and not words[j].get("new_seg"):
+                j += 1
+            s_fin = words[j - 1]["end"]
+            fronteras.append((s_ini, s_fin))
+
+    if not fronteras:
+        return clips
+
+    def _ini_enc(t):
+        result = fronteras[0][0]
+        for ini, _ in fronteras:
+            if ini <= t:
+                result = ini
+            else:
+                break
+        return result
+
+    def _fin_enc(t):
+        for _, fin in fronteras:
+            if fin >= t:
+                return fin
+        return fronteras[-1][1]
+
+    encajados = []
+    for idx, c in enumerate(clips):
+        segs     = c["segmentos"]
+        ini_orig = min(float(s["inicio"]) for s in segs)
+        fin_orig = max(float(s["fin"])    for s in segs)
+
+        ini_new = _ini_enc(ini_orig)
+        fin_new = min(_fin_enc(fin_orig), duracion_total)
+        fin_new = min(fin_new, ini_new + _ENCAJE_MAX)
+
+        dur_new = fin_new - ini_new
+
+        if abs(ini_new - ini_orig) < 0.1 and abs(fin_new - fin_orig) < 0.1:
+            print(f"   🔲 Clip {idx+1}: {ini_orig:.1f}s-{fin_orig:.1f}s → ya en límite de oración")
+        else:
+            print(f"   🔲 Clip {idx+1}: {ini_orig:.1f}s-{fin_orig:.1f}s → encajado a {ini_new:.1f}s-{fin_new:.1f}s")
+
+        if dur_new < _ENCAJE_MIN:
+            print(f"   ⏭️ Clip {idx+1} '{c.get('titulo','?')}' descartado tras encaje — {dur_new:.0f}s < {_ENCAJE_MIN}s")
+            continue
+
+        nuevos_segs = [{"inicio": float(s["inicio"]), "fin": float(s["fin"])} for s in segs]
+        nuevos_segs[0]["inicio"] = ini_new
+        nuevos_segs[-1]["fin"]   = fin_new
+        encajados.append({**c, "segmentos": nuevos_segs})
+
+    return encajados
+
+
 def procesar_viral(url, fuente_sub="Arial", mayusculas=False, modo_sub="bloques", progreso_cb=None, clip_listo_cb=None):
     """
     Núcleo de procesamiento — sin input(), sin menus.
@@ -264,6 +336,11 @@ def procesar_viral(url, fuente_sub="Arial", mayusculas=False, modo_sub="bloques"
                 else:
                     clips_validos.append(c)
             clips_detectados = clips_validos
+
+            # ── Encaje a límites de oración ───────────────────────────────────
+            if clips_detectados and words_global:
+                print("\n📐 Encajando clips a límites de oración...")
+                clips_detectados = _encajar_a_oraciones(clips_detectados, words_global, duracion)
 
             if not clips_detectados:
                 print("   ⚠️ Sin clips válidos → fallback")

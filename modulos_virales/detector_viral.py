@@ -430,7 +430,7 @@ Si la respuesta no es SÍ claro → DESCÁRTALO o ajusta los tiempos.
 
 ━━━ DURACIÓN — REGLA CRÍTICA ━━━
 ⚠️ Cada clip DEBE durar entre 30 y 110 segundos. SIN EXCEPCIONES.
-- MÍNIMO 30 segundos. Si un momento dura menos de 30s, amplíalo incluyendo contexto antes y después hasta llegar a 30s.
+- MÍNIMO 30 segundos. Si un momento no llega a 30s de forma natural, DESCÁRTALO — no lo estires. Un momento que necesita inflarse no es un buen momento.
 - MÁXIMO 110 segundos. Si dura más de 110s, divídelo en 2 clips más pequeños de 30-60s cada uno.
 - EJEMPLO CORRECTO  : "inicio": 269, "fin": 340  →  71 segundos ✓
 - EJEMPLO INCORRECTO: "inicio": 269, "fin": 276  →   7 segundos ✗ MUY CORTO
@@ -440,10 +440,16 @@ Si la respuesta no es SÍ claro → DESCÁRTALO o ajusta los tiempos.
 ━━━ REGLAS ━━━
 - Tiempos entre 0 y {duracion}s
 - Clips sobre momentos DISTINTOS (sin solapamiento)
-- Devuelve TODOS los clips ganadores — sin límite artificial
+- CALIDAD sobre cantidad: devuelve SOLO los momentos que de verdad valen. 3 clips excelentes son mejor que 10 mediocres. Si solo hay 2 momentos realmente buenos en el video, devuelve 2. Está perfectamente bien devolver pocos.
 
 TRANSCRIPCIÓN:
 {transcript}
+
+Puntúa cada clip con un "score" del 1 al 10:
+- 9-10: momento excepcional, imposible ignorar
+- 7-8: momento sólido que engancha con claridad
+- 5-6: interesante pero no imprescindible
+- 1-4: no lo incluyas
 
 Responde SOLO con JSON válido, sin texto adicional:
 [
@@ -451,6 +457,7 @@ Responde SOLO con JSON válido, sin texto adicional:
     "tipo": "VERDAD",
     "titulo": "Título máximo 7 palabras que engancha",
     "razon": "En una frase: por qué este clip hace que la gente se quede",
+    "score": 8,
     "segmentos": [{{"inicio": 0.0, "fin": 0.0}}]
   }}
 ]
@@ -597,4 +604,7 @@ def detectar_clips_ia(transcript, duracion_total):
 
     resultado = _deduplicar_clips(todos_clips, duracion_total)
     print(f"   ✅ {len(resultado)} clips únicos tras deduplicación (de {len(todos_clips)} totales)")
+    for i, c in enumerate(resultado):
+        dur_t = sum(float(s["fin"]) - float(s["inicio"]) for s in c["segmentos"])
+        print(f"   [{i+1}] score={c.get('score', '?')}/10 [{c.get('tipo','?')}] '{c.get('titulo','?')}' ({dur_t:.0f}s)")
     return resultado
