@@ -11,8 +11,9 @@ Input esperado (event["input"]):
     modo       : str   — "viral" | "podcast"               (default: viral)
 
 Limites:
-    MAX_CLIPS   = 15   clips devueltos como maximo
-    MAX_DUR_SEG = 7200 segundos de video (2 horas) — rechaza antes de descargar
+    MAX_CLIPS           = 15    clips devueltos como maximo
+    MAX_DUR_VIRAL_SEG   = 3600  segundos (1 hora)  — modo viral,   rechaza antes de descargar
+    MAX_DUR_PODCAST_SEG = 7200  segundos (2 horas) — modo podcast, rechaza antes de descargar
 """
 
 import os
@@ -27,8 +28,9 @@ import runpod
 _RAIZ = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_RAIZ, "modulos_virales"))
 
-MAX_CLIPS   = 15
-MAX_DUR_SEG = 7200  # 2 horas
+MAX_CLIPS             = 15
+MAX_DUR_VIRAL_SEG     = 3600   # 1 hora  — modo viral
+MAX_DUR_PODCAST_SEG   = 7200   # 2 horas — modo podcast
 
 # ── Apify (descarga YouTube en 1080p) ─────────────────────────────────────────
 # Pon tu token en RunPod → endpoint → Environment Variables → APIFY_TOKEN
@@ -281,6 +283,25 @@ def handler(event):
     if not url:
         return {"error": "Falta el campo 'url' en el input"}
 
+    # ── Límite de duración según modo (ANTES de descargar) ───────────────────────
+    _limite_dur = MAX_DUR_VIRAL_SEG if modo == "viral" else MAX_DUR_PODCAST_SEG
+    dur = _duracion_video(url)
+    if dur is not None and dur > _limite_dur:
+        dur_min    = int(dur // 60)
+        limite_min = _limite_dur // 60
+        return {
+            "error_code": "VIDEO_TOO_LONG",
+            "error": (
+                f"El modo {'Clips Virales' if modo == 'viral' else 'Podcast'} acepta videos de hasta "
+                f"{limite_min} minutos. Este video dura {dur_min} minutos."
+            ),
+            "error_data": {
+                "dur_min":    dur_min,
+                "limite_min": limite_min,
+                "modo":       modo,
+            },
+        }
+
     # ── Pre-descarga: convierte cualquier URL a ruta local antes de procesar ─────
     # Ambos modos (viral y podcast) aceptan rutas locales sin cambio alguno.
     if url.startswith("http") and _es_youtube(url):
@@ -307,16 +328,6 @@ def handler(event):
 
     if modo_sub not in {"bloques", "karaoke", "none"}:
         modo_sub = "bloques"
-
-    # ── Límite de duración (antes de descargar) ───────────────────────────────
-    dur = _duracion_video(url)
-    if dur is not None and dur > MAX_DUR_SEG:
-        return {
-            "error": (
-                f"Video demasiado largo: {int(dur // 60):.0f} min "
-                f"(maximo permitido: {MAX_DUR_SEG // 3600:.0f} horas = {MAX_DUR_SEG} s)."
-            )
-        }
 
     print(f"🚀 KLYPO handler — modo={modo} | url={url[:60]} | fuente={fuente_sub} | modo_sub={modo_sub}")
 
