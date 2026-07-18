@@ -23,9 +23,11 @@ import sys
 import traceback
 from typing import Optional
 
+import time as _time
+
 import requests as _req
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -39,6 +41,9 @@ sys.path.insert(0, os.path.join(BASE_DIR, "modulos_virales"))
 RUNPOD_API_KEY     = os.environ.get("RUNPOD_API_KEY", "").strip()
 RUNPOD_ENDPOINT_ID = os.environ.get("RUNPOD_ENDPOINT_ID", "").strip()
 RUNPOD_BASE        = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}"
+
+SUPABASE_URL         = os.environ.get("SUPABASE_URL", "").strip()
+SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "").strip()
 
 # ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(title="KLYPO API", version="2.0")
@@ -90,6 +95,105 @@ _ESTADO = {
 }
 
 
+# ── Supabase: verificación de token + helpers REST ────────────────────────────
+
+_token_cache: dict[str, tuple[str, float]] = {}  # {token: (user_id, expira_unix)}
+_TOKEN_CACHE_TTL = 60  # segundos
+
+
+def _verificar_token(authorization: str | None) -> str:
+    """
+    Verifica el JWT del usuario preguntando a Supabase /auth/v1/user.
+    Cachea el resultado 60s para no golpear Supabase en reenvíos rápidos.
+    Devuelve el user_id (uuid) o lanza HTTPException.
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(401, "Token de autenticación requerido")
+
+    token = authorization[7:]
+    ahora = _time.time()
+
+    if token in _token_cache:
+        user_id, expira = _token_cache[token]
+        if ahora < expira:
+            return user_id
+        del _token_cache[token]
+
+    try:
+        resp = _req.get(
+            f"{SUPABASE_URL}/auth/v1/user",
+            headers={
+                "apikey":        SUPABASE_SERVICE_KEY,
+                "Authorization": f"Bearer {token}",
+            },
+            timeout=8,
+        )
+    except _req.exceptions.Timeout:
+        raise HTTPException(503, "Servicio de autenticación lento — intenta de nuevo en unos segundos")
+    except _req.exceptions.RequestException as e:
+        raise HTTPException(503, f"No se pudo verificar la sesión: {e}")
+
+    if resp.status_code == 401:
+        raise HTTPException(401, "Sesión expirada — vuelve a iniciar sesión")
+    if not resp.ok:
+        raise HTTPException(502, f"Error verificando sesión ({resp.status_code})")
+
+    user_id = resp.json().get("id", "")
+    if not user_id:
+        raise HTTPException(401, "Token inválido: no contiene ID de usuario")
+
+    _token_cache[token] = (user_id, ahora + _TOKEN_CACHE_TTL)
+    if len(_token_cache) > 500:
+        _token_cache.clear()
+
+    return user_id
+
+
+def _supabase_rpc(funcion: str, params: dict) -> dict:
+    resp = _req.post(
+        f"{SUPABASE_URL}/rest/v1/rpc/{funcion}",
+        json=params,
+        headers={
+            "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+            "apikey":        SUPABASE_SERVICE_KEY,
+            "Content-Type":  "application/json",
+        },
+        timeout=10,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _supabase_insert(tabla: str, datos: dict) -> dict:
+    resp = _req.post(
+        f"{SUPABASE_URL}/rest/v1/{tabla}",
+        json=datos,
+        headers={
+            "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+            "apikey":        SUPABASE_SERVICE_KEY,
+            "Content-Type":  "application/json",
+            "Prefer":        "return=representation",
+        },
+        timeout=10,
+    )
+    resp.raise_for_status()
+    return resp.json()[0]
+
+
+def _supabase_patch(tabla: str, filtros: dict, datos: dict) -> None:
+    params = "&".join(f"{k}=eq.{v}" for k, v in filtros.items())
+    _req.patch(
+        f"{SUPABASE_URL}/rest/v1/{tabla}?{params}",
+        json=datos,
+        headers={
+            "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+            "apikey":        SUPABASE_SERVICE_KEY,
+            "Content-Type":  "application/json",
+        },
+        timeout=10,
+    )
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @app.get("/")
@@ -103,13 +207,23 @@ def root():
 
 
 @app.post("/generar")
-def generar(req: SolicitudClip):
+def generar(req: SolicitudClip, authorization: str | None = Header(default=None)):
     """
     Envia el job a RunPod Serverless y devuelve el job_id interno.
     El frontend usa ese job_id para hacer polling con /estado/{job_id}.
     """
     if not req.url.strip():
         raise HTTPException(400, "URL vacia")
+
+    # [PASO 3 — log-only] Verificar identidad sin descontar crédito todavía
+    if SUPABASE_URL and SUPABASE_SERVICE_KEY:
+        try:
+            user_id = _verificar_token(authorization)
+            print(f"🪪 /generar — user_id={user_id}")
+        except HTTPException as e:
+            print(f"⚠️  /generar — token inválido o ausente: {e.detail}")
+            # En log-only NO bloqueamos — el job procede igual
+
 
     if not RUNPOD_API_KEY or not RUNPOD_ENDPOINT_ID:
         raise HTTPException(
