@@ -215,15 +215,14 @@ def generar(req: SolicitudClip, authorization: str | None = Header(default=None)
     if not req.url.strip():
         raise HTTPException(400, "URL vacia")
 
-    # [PASO 3 — log-only] Verificar identidad sin descontar crédito todavía
+    # Verificar identidad (sin bloquear todavía — créditos llegan en Paso 6)
+    user_id = None
     if SUPABASE_URL and SUPABASE_SERVICE_KEY:
         try:
             user_id = _verificar_token(authorization)
-            print(f"🪪 /generar — user_id={user_id}")
+            print(f"🪪 /generar — user_id={user_id}", flush=True)
         except HTTPException as e:
-            print(f"⚠️  /generar — token inválido o ausente: {e.detail}")
-            # En log-only NO bloqueamos — el job procede igual
-
+            print(f"⚠️  /generar — token inválido o ausente: {e.detail}", flush=True)
 
     if not RUNPOD_API_KEY or not RUNPOD_ENDPOINT_ID:
         raise HTTPException(
@@ -271,8 +270,24 @@ def generar(req: SolicitudClip, authorization: str | None = Header(default=None)
         "error":         "",
     }
 
-    print(f"✅ Job creado: RunPod={job_id}")
-    return {"job_id": job_id, "mensaje": "Procesamiento enviado a RunPod"}
+    # [PASO 4] Backend crea el proyecto en Supabase (elimina clips huérfanos)
+    proyecto_id = None
+    if user_id and SUPABASE_URL and SUPABASE_SERVICE_KEY:
+        try:
+            proyecto = _supabase_insert("proyectos", {
+                "job_id":  job_id,
+                "user_id": user_id,
+                "modo":    req.modo,
+                "clips":   [],
+            })
+            proyecto_id = proyecto.get("id")
+            print(f"📁 Proyecto creado en Supabase: {proyecto_id}", flush=True)
+        except Exception as e:
+            print(f"⚠️  No se pudo crear el proyecto en Supabase: {e}", flush=True)
+            # No bloqueamos — el job sigue, el front verá clips aunque no queden en historial
+
+    print(f"✅ Job creado: RunPod={job_id} | proyecto={proyecto_id}", flush=True)
+    return {"job_id": job_id, "proyecto_id": proyecto_id, "mensaje": "Procesamiento enviado a RunPod"}
 
 
 @app.get("/estado/{job_id}")
