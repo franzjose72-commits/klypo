@@ -44,6 +44,7 @@ RUNPOD_BASE        = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}"
 
 SUPABASE_URL         = os.environ.get("SUPABASE_URL", "").strip()
 SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "").strip()
+CREDITOS_ACTIVOS     = os.environ.get("CREDITOS_ACTIVOS", "false").strip().lower() == "true"
 
 # ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(title="KLYPO API", version="2.0")
@@ -215,7 +216,7 @@ def generar(req: SolicitudClip, authorization: str | None = Header(default=None)
     if not req.url.strip():
         raise HTTPException(400, "URL vacia")
 
-    # Verificar identidad (sin bloquear todavía — créditos llegan en Paso 6)
+    # Verificar identidad
     user_id = None
     if SUPABASE_URL and SUPABASE_SERVICE_KEY:
         try:
@@ -223,6 +224,34 @@ def generar(req: SolicitudClip, authorization: str | None = Header(default=None)
             print(f"🪪 /generar — user_id={user_id}", flush=True)
         except HTTPException as e:
             print(f"⚠️  /generar — token inválido o ausente: {e.detail}", flush=True)
+
+    # [PASO 6] Verificar y descontar crédito
+    creditos_restantes = None
+    if user_id and SUPABASE_URL and SUPABASE_SERVICE_KEY:
+        if CREDITOS_ACTIVOS:
+            try:
+                creditos_restantes = _supabase_rpc("descontar_credito", {"p_user_id": user_id})
+                if creditos_restantes is None:
+                    raise HTTPException(402, "Sin créditos disponibles")
+                print(f"💳 Crédito descontado — quedan {creditos_restantes} (user {user_id})", flush=True)
+            except HTTPException:
+                raise
+            except Exception as e:
+                print(f"⚠️  Error descontando crédito: {e}", flush=True)
+                raise HTTPException(503, "No se pudo verificar los créditos — intenta de nuevo")
+        else:
+            try:
+                r = _req.get(
+                    f"{SUPABASE_URL}/rest/v1/perfiles?id=eq.{user_id}&select=creditos",
+                    headers={"Authorization": f"Bearer {SUPABASE_SERVICE_KEY}", "apikey": SUPABASE_SERVICE_KEY},
+                    timeout=8,
+                )
+                rows = r.json() if r.ok else []
+                creds = rows[0].get("creditos", "?") if rows else "?"
+                print(f"💳 [DRY RUN] Descontaría 1 crédito — tiene {creds} (user {user_id})", flush=True)
+                creditos_restantes = (creds - 1) if isinstance(creds, int) else None
+            except Exception as e:
+                print(f"💳 [DRY RUN] No pudo leer créditos: {e}", flush=True)
 
     if not RUNPOD_API_KEY or not RUNPOD_ENDPOINT_ID:
         raise HTTPException(
@@ -252,10 +281,21 @@ def generar(req: SolicitudClip, authorization: str | None = Header(default=None)
         resp.raise_for_status()
         data = resp.json()
     except _req.exceptions.RequestException as e:
+        if CREDITOS_ACTIVOS and user_id and creditos_restantes is not None:
+            try:
+                _supabase_rpc("restaurar_credito", {"p_user_id": user_id})
+                print(f"💳 Crédito restaurado (fallo RunPod send, user {user_id})", flush=True)
+            except Exception:
+                pass
         raise HTTPException(502, f"Error conectando con RunPod: {e}")
 
     runpod_job_id = data.get("id")
     if not runpod_job_id:
+        if CREDITOS_ACTIVOS and user_id and creditos_restantes is not None:
+            try:
+                _supabase_rpc("restaurar_credito", {"p_user_id": user_id})
+            except Exception:
+                pass
         raise HTTPException(502, f"RunPod no devolvio job ID: {data}")
 
     # Usar el ID de RunPod directamente como job_id publico.
@@ -263,11 +303,13 @@ def generar(req: SolicitudClip, authorization: str | None = Header(default=None)
     # se haya vaciado por un --reload o reinicio del servidor.
     job_id = runpod_job_id
     jobs[job_id] = {
-        "estado":        "en_cola",
-        "progreso":      "🕐 Job enviado a RunPod — en cola...",
-        "clips":         [],
-        "clips_detalle": [],
-        "error":         "",
+        "estado":           "en_cola",
+        "progreso":         "🕐 Job enviado a RunPod — en cola...",
+        "clips":            [],
+        "clips_detalle":    [],
+        "error":            "",
+        "user_id":          user_id,
+        "credito_devuelto": False,
     }
 
     # [PASO 4] Backend crea el proyecto en Supabase (elimina clips huérfanos)
@@ -287,7 +329,12 @@ def generar(req: SolicitudClip, authorization: str | None = Header(default=None)
             # No bloqueamos — el job sigue, el front verá clips aunque no queden en historial
 
     print(f"✅ Job creado: RunPod={job_id} | proyecto={proyecto_id}", flush=True)
-    return {"job_id": job_id, "proyecto_id": proyecto_id, "mensaje": "Procesamiento enviado a RunPod"}
+    return {
+        "job_id":             job_id,
+        "proyecto_id":        proyecto_id,
+        "creditos_restantes": creditos_restantes,
+        "mensaje":            "Procesamiento enviado a RunPod",
+    }
 
 
 @app.get("/estado/{job_id}")
@@ -360,11 +407,13 @@ def estado(job_id: str):
     # Reconstruir entrada en cache si se perdio por reinicio del servidor
     if job is None:
         job = {
-            "estado":        "en_cola",
-            "progreso":      "",
-            "clips":         [],
-            "clips_detalle": [],
-            "error":         "",
+            "estado":           "en_cola",
+            "progreso":         "",
+            "clips":            [],
+            "clips_detalle":    [],
+            "error":            "",
+            "user_id":          None,
+            "credito_devuelto": False,
         }
         jobs[job_id] = job
 
@@ -466,7 +515,6 @@ def estado(job_id: str):
             job["progreso"] = f"❌ {job['error']}"
 
     elif runpod_status in ("FAILED", "CANCELLED", "TIMED_OUT"):
-        # Intentar extraer mensaje de error de donde RunPod lo ponga
         error_msg = (
             data.get("error")
             or (data.get("output") or {}).get("error")
@@ -475,6 +523,38 @@ def estado(job_id: str):
         job["estado"]   = "error"
         job["error"]    = error_msg
         job["progreso"] = f"❌ {error_msg}"
+
+        # [PASO 6] Restaurar crédito si el job falló
+        if SUPABASE_URL and SUPABASE_SERVICE_KEY and not job.get("credito_devuelto"):
+            uid = job.get("user_id")
+            # Render restart: uid puede ser None — recuperarlo de proyectos
+            if not uid:
+                try:
+                    r = _req.get(
+                        f"{SUPABASE_URL}/rest/v1/proyectos"
+                        f"?job_id=eq.{job_id}&select=user_id,credito_devuelto",
+                        headers={"Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+                                 "apikey": SUPABASE_SERVICE_KEY},
+                        timeout=8,
+                    )
+                    if r.ok and r.json():
+                        row = r.json()[0]
+                        uid = row.get("user_id")
+                        if row.get("credito_devuelto"):
+                            uid = None  # ya restaurado anteriormente
+                except Exception as e:
+                    print(f"⚠️  No se pudo leer proyecto para restaurar crédito: {e}", flush=True)
+            if uid:
+                if CREDITOS_ACTIVOS:
+                    try:
+                        _supabase_rpc("restaurar_credito", {"p_user_id": uid})
+                        _supabase_patch("proyectos", {"job_id": job_id}, {"credito_devuelto": True})
+                        print(f"💳 Crédito restaurado (job {job_id}, user {uid})", flush=True)
+                    except Exception as e:
+                        print(f"⚠️  No se pudo restaurar crédito: {e}", flush=True)
+                else:
+                    print(f"💳 [DRY RUN] Restauraría crédito (job {job_id}, user {uid})", flush=True)
+                job["credito_devuelto"] = True
 
     return job
 
