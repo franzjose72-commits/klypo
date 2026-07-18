@@ -448,6 +448,18 @@ def estado(job_id: str):
                 f"✅ {n} clip{'s' if n != 1 else ''} "
                 f"{'listos' if n != 1 else 'listo'} para descargar"
             )
+            # [PASO 5] Backend vincula clips al proyecto en Supabase (idempotente)
+            # Usa job_id como filtro para funcionar aunque jobs[] esté vacío por reinicio.
+            if SUPABASE_URL and SUPABASE_SERVICE_KEY:
+                try:
+                    _supabase_patch(
+                        "proyectos",
+                        {"job_id": job_id},
+                        {"clips": job["clips"]},
+                    )
+                    print(f"📎 {n} clips vinculados a proyecto (job {job_id})", flush=True)
+                except Exception as e:
+                    print(f"⚠️  No se pudo vincular clips en Supabase (job {job_id}): {e}", flush=True)
         else:
             job["estado"]   = "error"
             job["error"]    = error_msg or "No se generaron clips"
