@@ -231,11 +231,19 @@ def generar(req: SolicitudClip, authorization: str | None = Header(default=None)
         if CREDITOS_ACTIVOS:
             try:
                 creditos_restantes = _supabase_rpc("descontar_credito", {"p_user_id": user_id})
-                if creditos_restantes is None:
-                    raise HTTPException(402, "Sin créditos disponibles")
                 print(f"💳 Crédito descontado — quedan {creditos_restantes} (user {user_id})", flush=True)
             except HTTPException:
                 raise
+            except _req.exceptions.HTTPError as e:
+                # descontar_credito hace RAISE EXCEPTION 'SIN_CREDITOS' → Supabase devuelve HTTP 400
+                try:
+                    supabase_msg = (e.response.json() if e.response is not None else {}).get("message", "")
+                except Exception:
+                    supabase_msg = ""
+                if "SIN_CREDITOS" in supabase_msg:
+                    raise HTTPException(402, "Sin créditos disponibles")
+                print(f"⚠️  Error descontando crédito: {e}", flush=True)
+                raise HTTPException(503, "No se pudo verificar los créditos — intenta de nuevo")
             except Exception as e:
                 print(f"⚠️  Error descontando crédito: {e}", flush=True)
                 raise HTTPException(503, "No se pudo verificar los créditos — intenta de nuevo")
