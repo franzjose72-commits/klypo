@@ -496,8 +496,19 @@ def estado(job_id: str):
                     job["clips_detalle"].append(c)
 
         n = len(job["clips"])
-        print(f"🔍 COMPLETED: {n} clips en job tras escanear output "
-              f"({len(output_items)} items, error_msg={error_msg!r})")
+        print(f"🔍 COMPLETED: {n} clips vía stream "
+              f"({len(output_items)} items, error_msg={error_msg!r})", flush=True)
+
+        # Suplementar con R2 por si /stream no entregó todos los clips
+        r2_urls = _clips_r2(job_id)
+        if r2_urls:
+            r2_seen = set(job["clips"])
+            for url in r2_urls:
+                if url not in r2_seen:
+                    job["clips"].append(url)
+                    r2_seen.add(url)
+        n = len(job["clips"])
+        print(f"🔍 COMPLETED: {n} clips totales (stream + R2={len(r2_urls)}) para job {job_id}", flush=True)
 
         if n > 0:
             job["estado"]   = "listo"
@@ -505,16 +516,16 @@ def estado(job_id: str):
                 f"✅ {n} clip{'s' if n != 1 else ''} "
                 f"{'listos' if n != 1 else 'listo'} para descargar"
             )
-            # [PASO 5] Backend vincula clips al proyecto en Supabase (idempotente)
-            # Usa job_id como filtro para funcionar aunque jobs[] esté vacío por reinicio.
+            # [PASO 5] Vincular clips al proyecto en Supabase (idempotente, usa job_id)
             if SUPABASE_URL and SUPABASE_SERVICE_KEY:
+                print(f"🔗 Intentando vincular {n} clips al proyecto job_id={job_id}", flush=True)
                 try:
                     _supabase_patch(
                         "proyectos",
                         {"job_id": job_id},
                         {"clips": job["clips"]},
                     )
-                    print(f"📎 {n} clips vinculados a proyecto (job {job_id})", flush=True)
+                    print(f"✅ Clips vinculados en Supabase: {n} (job {job_id})", flush=True)
                 except Exception as e:
                     print(f"⚠️  No se pudo vincular clips en Supabase (job {job_id}): {e}", flush=True)
         else:
@@ -600,16 +611,8 @@ def presigned_upload(filename: str = Query(..., description="Nombre del archivo 
     return resultado   # {put_url, public_url, key}
 
 
-@app.get("/clips-parciales/{job_id}")
-def clips_parciales(job_id: str):
-    """
-    Lista los clips ya subidos a R2 con el prefijo job_id/.
-    El frontend lo llama cada 5s durante procesamiento para mostrar clips en tiempo real,
-    sin depender del /stream de RunPod (que da timeout cuando el worker está ocupado).
-    Siempre devuelve {"clips": []} ante cualquier error — nunca rompe el polling.
-    """
-    if not job_id or not job_id.strip():
-        return {"clips": []}
+def _clips_r2(job_id: str) -> list:
+    """Lista clips MP4 en R2 bajo el prefijo job_id/. Devuelve [] ante cualquier error."""
     try:
         import boto3.session as b3s
         from botocore.config import Config as _Cfg
@@ -622,7 +625,7 @@ def clips_parciales(job_id: str):
         r2_public  = os.environ.get("R2_PUBLIC_URL", "").strip().rstrip("/")
 
         if not all([access_key, secret_key, endpoint, r2_public]):
-            return {"clips": []}
+            return []
 
         guardadas = _limpiar_proxy()
         try:
@@ -638,19 +641,46 @@ def clips_parciales(job_id: str):
                     s3                = {"addressing_style": "path"},
                 ),
             )
-            resp  = s3.list_objects_v2(Bucket=bucket, Prefix=f"{job_id}/")
-            clips = [
+            resp = s3.list_objects_v2(Bucket=bucket, Prefix=f"{job_id}/")
+            return [
                 f"{r2_public}/{obj['Key']}"
                 for obj in resp.get("Contents", [])
                 if obj["Key"].lower().endswith(".mp4")
             ]
-            return {"clips": clips}
         finally:
             _restaurar_proxy(guardadas)
-
     except Exception as e:
-        print(f"⚠️ /clips-parciales/{job_id}: {e}")
+        print(f"⚠️  _clips_r2({job_id}): {e}", flush=True)
+        return []
+
+
+@app.get("/clips-parciales/{job_id}")
+def clips_parciales(job_id: str):
+    """
+    Lista clips subidos a R2 con prefijo job_id/ y los guarda en Supabase si son nuevos.
+    El frontend lo llama cada 5s para mostrar clips en tiempo real.
+    Siempre devuelve {"clips": []} ante cualquier error.
+    """
+    if not job_id or not job_id.strip():
         return {"clips": []}
+
+    clips = _clips_r2(job_id)
+
+    # Guardar en Supabase en cuanto aparezcan clips, sin esperar al COMPLETED de RunPod.
+    # Solo si hay más clips que los ya registrados en memoria (evita PATCH innecesario).
+    if clips and SUPABASE_URL and SUPABASE_SERVICE_KEY:
+        job       = jobs.get(job_id)
+        prev_n    = len(job.get("clips", [])) if job is not None else -1  # -1 = Render reiniciado
+        if len(clips) != prev_n:
+            try:
+                _supabase_patch("proyectos", {"job_id": job_id}, {"clips": clips})
+                print(f"📎 /clips-parciales: {len(clips)} clips → Supabase (job {job_id})", flush=True)
+                if job is not None:
+                    job["clips"] = list(clips)  # sincronizar cache
+            except Exception as e:
+                print(f"⚠️  /clips-parciales PATCH falló (job {job_id}): {e}", flush=True)
+
+    return {"clips": clips}
 
 
 @app.get("/download/{path:path}")
