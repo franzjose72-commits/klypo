@@ -379,6 +379,12 @@ UN CLIP GANADOR es un momento donde el orador dice algo que hace que la gente SE
 → Es algo polémico, controvertido, o que genera debate
 → Es humor que viene de una verdad incómoda
 
+GUÍA DEL NIÑO DE 5 AÑOS (aplica a la mayoría, no es ley absoluta):
+IDEALMENTE, un clip ganador se entiende sin contexto previo — como si alguien que no sabe nada del tema pudiera captar la idea principal solo viéndolo. Si necesitas haber visto lo anterior para entenderlo, probablemente no funciona como clip independiente. Esta guía aplica a la mayoría de los clips, aunque algunos momentos excepcionales pueden ser un poco más complejos y aún así valer. Un clip que NO se entiende solo, sin una razón excepcional, baja su score.
+
+INICIO Y CIERRE COMPLETOS:
+Un buen clip tiene un INICIO claro (empieza al comienzo de una idea, no a mitad de una frase) y un CIERRE completo (termina cuando la idea se remata, no antes). Si el clip empieza a media frase o corta el remate, baja su score. El momento debe sentirse completo por sí solo.
+
 ━━━ LEY DEL INICIO — EL CLIP DEBE TENER CONTEXTO ━━━
 El espectador llega al clip SIN haber visto nada antes. Debe entender de qué va en los primeros 3 segundos.
 
@@ -446,11 +452,34 @@ Si la respuesta no es SÍ claro → DESCÁRTALO o ajusta los tiempos.
 TRANSCRIPCIÓN:
 {transcript}
 
-Puntúa cada clip con un "score" del 1 al 10:
-- 9-10: momento excepcional, imposible ignorar
-- 7-8: momento sólido que engancha con claridad
-- 5-6: interesante pero no imprescindible
-- 1-4: no lo incluyas
+━━━ CÓMO PUNTUAR CON HONESTIDAD ━━━
+La mayoría de momentos en un podcast son 3-5. Un 7 debe ser genuinamente enganchador. Un 9 es infrecuente — ocurre una o dos veces en un podcast de 1 hora.
+IMPORTANTE: puntúa TODOS los clips que detectes aunque el score sea bajo. El sistema filtra automáticamente los malos. NO infles el score: un clip común y corriente es un 4, no un 7.
+
+━━━ PRUEBA DEL GANCHO — aplícala antes de dar score alto ━━━
+Imagina que alguien ve SOLO los primeros 3 segundos del clip, sin haber visto nada antes. ¿Se quedaría a verlo completo?
+→ SÍ, claramente → el clip puede llegar a 7+
+→ SOLO si ya conoce al orador → máximo 6
+→ NO → máximo 4, probablemente menos
+Un clip que empieza con contexto genérico sin una frase que enganche sola, nunca puede superar 5.
+
+━━━ QUÉ BAJA EL SCORE ━━━
+Estas cosas REDUCEN el score — no las ignores:
+✗ El clip empieza con contexto sin gancho ("bueno entonces...", "como decíamos...")
+✗ La idea principal ya fue dicha antes en el podcast — es repetición
+✗ El remate es predecible o genérico ("hay que trabajar duro", "el dinero importa")
+✗ El orador responde una pregunta muy específica sin valor fuera de contexto
+✗ Historia larga sin tensión, fracaso real, ni revelación sorpresiva
+✗ Explicación técnica o paso a paso sin dato contraintuitivo
+✗ Humor situacional que solo tiene gracia si viste lo anterior
+✗ El clip empieza a mitad de una idea o corta antes del remate — se siente incompleto
+
+━━━ ESCALA DE SCORE (sé duro y honesto) ━━━
+- 9-10 → Lo compartirías sin pensarlo. Los primeros 3 segundos ya enganchan a alguien que nunca oyó nada del orador. Genera debate o reacción inmediata. Muy infrecuente.
+- 7-8  → Hook claro. Un oyente nuevo lo miraría completo. Hay un remate o revelación real que no se oye en cualquier podcast.
+- 5-6  → Interesante solo si ya sigues al orador. Sin hook real para un oyente nuevo. Payload débil o predecible.
+- 3-4  → Relleno o contexto sin remate. No dice nada que sorprenda. Nadie lo compartiría.
+- 1-2  → Conversación banal o momento que solo tiene sentido si viste lo anterior. Sin valor fuera de contexto.
 
 Responde SOLO con JSON válido, sin texto adicional:
 [
@@ -474,14 +503,25 @@ def _llamar_llama_chunk(prompt_txt):
                 model="llama-3.1-8b-instant",
                 messages=[{"role": "user", "content": prompt_txt}],
                 temperature=0.4,
-                max_tokens=2000,
+                max_tokens=1000,
             )
             texto = resp.choices[0].message.content.strip()
+            finish = resp.choices[0].finish_reason
             m = re.search(r'\[.*\]', texto, re.DOTALL)
             if not m:
+                if finish == "length":
+                    print(f"   ⚠️ Respuesta cortada (finish_reason=length) — max_tokens corto, JSON incompleto")
                 return []
-            return json.loads(m.group(0))
+            try:
+                clips = json.loads(m.group(0))
+            except json.JSONDecodeError:
+                print(f"   ⚠️ JSON inválido en chunk — posible respuesta cortada (finish_reason={finish})")
+                return []
+            if finish == "length":
+                print(f"   ⚠️ Respuesta alcanzó max_tokens ({len(clips)} clips parseados, puede haber más)")
+            return clips
         except Exception as e:
+            print(f"   🔍 Error real Groq: {type(e).__name__}: {e}")
             if "413" in str(e):
                 print(f"   ⚠️ Chunk demasiado grande (413), saltando")
                 return []
@@ -578,9 +618,9 @@ def detectar_clips_ia(transcript, duracion_total):
     if not _groq or not transcript.strip():
         return []
 
-    # Dividir el transcript en chunks de ~6000 chars (≈1500 tokens)
+    # Dividir el transcript en chunks de ~3000 chars (≈750 tokens)
     # El transcript ya tiene timestamps absolutos por línea ("t=361.5s: texto...")
-    CHUNK_CHARS = 6000
+    CHUNK_CHARS = 3000
     OVERLAP_CHARS = 500  # solapamiento entre chunks para no perder clips en el corte
 
     lineas = [l for l in transcript.strip().split('\n') if l.strip()]
