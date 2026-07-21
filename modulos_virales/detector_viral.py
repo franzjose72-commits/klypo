@@ -194,6 +194,7 @@ def detectar_palabras_clave(video_path):
 
 MIN_GAP_CLIPS     = 45   # segundos mínimos entre el pico de un clip y el siguiente
 MAX_CLIPS_VIRALES = 8    # máximo de clips por video — evita cortar TODO el video en trozos
+MIN_SCORE_VIRAL   = 6    # score mínimo (1-10) para que un clip IA pase — ajustar aquí para subir el nivel
 
 def fusionar_en_clips(picos_audio, picos_video, palabras_clave,
                       duracion_total, dur_min=15, dur_max=60, ventana_fusion=2.0):
@@ -503,8 +504,15 @@ def _deduplicar_clips(clips, duracion_total):
     DUR_MAX = 110
     EXPAND  = 15
 
+    descartados_score = 0
     validos_raw = []
     for c in clips:
+        score = c.get("score", 10)  # sin score = deja pasar (clips de fallback sin IA)
+        if isinstance(score, (int, float)) and score < MIN_SCORE_VIRAL:
+            descartados_score += 1
+            print(f"   ⏭️ Score {score}/10 < {MIN_SCORE_VIRAL} — descartado: '{c.get('titulo', '?')}'")
+            continue
+
         segs = [
             s for s in c.get("segmentos", [])
             if float(s.get("fin", 0)) > float(s.get("inicio", 0))
@@ -534,6 +542,11 @@ def _deduplicar_clips(clips, duracion_total):
 
         c["segmentos"] = segs
         validos_raw.append(c)
+
+    if clips:
+        n_pasaron = len(clips) - descartados_score
+        print(f"   🎯 Filtro score: {len(clips)} detectados → {n_pasaron} pasaron "
+              f"({descartados_score} descartados por score < {MIN_SCORE_VIRAL})")
 
     # Eliminar solapamientos >50%
     aceptados = []
