@@ -19,6 +19,7 @@ INDEPENDENCIA TOTAL: no toca camara.py, editor.py ni transcriptor.py.
 
 import os
 import sys
+import time
 import unicodedata
 import traceback
 
@@ -310,14 +311,18 @@ def procesar_viral(url, fuente_sub="Arial", mayusculas=False, modo_sub="bloques"
 
     # ── FASE 1: Transcripción ─────────────────────────────────────────────────
     print("🎙️ FASE 1: Transcribiendo...")
+    t0_tx        = time.time()
     tx           = transcribir_video_completo(video_path)
     transcript   = tx.get("text",  "") if isinstance(tx, dict) else tx
     words_global = tx.get("words", []) if isinstance(tx, dict) else []
+    print(f"   ⏱️ Transcripción: {time.time() - t0_tx:.1f}s")
 
     if transcript.strip():
         print(f"   ✅ {len(transcript.split())} palabras | {len(words_global)} timestamps\n")
         print("🧠 FASE 2: Llama detectando clips...")
+        t0_det           = time.time()
         clips_detectados = detectar_clips_ia(transcript, duracion)
+        print(f"   ⏱️ Detección IA: {time.time() - t0_det:.1f}s")
 
         if clips_detectados:
             print(f"\n   ✅ {len(clips_detectados)} clips detectados:")
@@ -387,6 +392,7 @@ def procesar_viral(url, fuente_sub="Arial", mayusculas=False, modo_sub="bloques"
                 print(f"   ⚠️ No se pudo armar el clip.\n")
                 continue
 
+            t0_clip    = time.time()
             words_clip = _remap_words(words_global, info["segmentos"], pre_contexto=_PRE_CONTEXTO) if words_global else []
             print(f"   ⏱️  {clip.duration:.0f}s | {len(info['segmentos'])} seg | {len(words_clip)} palabras")
 
@@ -406,6 +412,7 @@ def procesar_viral(url, fuente_sub="Arial", mayusculas=False, modo_sub="bloques"
                 procesar_broll(words_clip, clip.duration, output, fuente_broll="local")
 
             ruta_abs = os.path.abspath(output)
+            print(f"   ⏱️ Render clip {i+1}: {time.time() - t0_clip:.1f}s")
             rutas_generadas.append(ruta_abs)
             print(f"   ✅ {output}\n")
             if clip_listo_cb:

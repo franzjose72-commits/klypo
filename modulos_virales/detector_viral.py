@@ -291,6 +291,7 @@ def transcribir_video_completo(video_path, duracion_max_s=1500):
         # Transcribir con AssemblyAI
         config = aai.TranscriptionConfig(
             language_code="es",
+            speech_model=aai.SpeechModel.nano,
             punctuate=True,
             format_text=True,
         )
