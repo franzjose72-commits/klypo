@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.join(_RAIZ, "modulos_virales"))
 
 MAX_CLIPS             = 15
 MAX_DUR_VIRAL_SEG     = 3600   # 1 hora  — modo viral
-MAX_DUR_PODCAST_SEG   = 7200   # 2 horas — modo podcast
+MAX_DUR_PODCAST_SEG   = 3600   # 1 hora  — modo podcast (límite Groq free plan)
 
 # ── Apify (descarga YouTube en 1080p) ─────────────────────────────────────────
 # Pon tu token en RunPod → endpoint → Environment Variables → APIFY_TOKEN
@@ -289,11 +289,15 @@ def handler(event):
     if dur is not None and dur > _limite_dur:
         dur_min    = int(dur // 60)
         limite_min = _limite_dur // 60
+        _modo_es   = 'Clips Virales' if modo == 'viral' else 'Podcast'
+        _modo_en   = 'Viral Clips'   if modo == 'viral' else 'Podcast'
         return {
             "error_code": "VIDEO_TOO_LONG",
             "error": (
-                f"El modo {'Clips Virales' if modo == 'viral' else 'Podcast'} acepta videos de hasta "
-                f"{limite_min} minutos. Este video dura {dur_min} minutos."
+                f"El modo {_modo_es} acepta videos de hasta {limite_min} min "
+                f"(este video: {dur_min} min). Recorta el video o usa un segmento más corto. "
+                f"/ {_modo_en} mode accepts up to {limite_min} min "
+                f"(this video: {dur_min} min). Please trim or use a shorter segment."
             ),
             "error_data": {
                 "dur_min":    dur_min,

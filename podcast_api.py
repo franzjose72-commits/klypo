@@ -189,7 +189,7 @@ def procesar_podcast(
     _t0 = _time.time()
 
     print(f"⏱️ [+{_time.time()-_t0:.1f}s] Importando transcriptor...")
-    from transcriptor import transcribir_clip_timestamps, procesar_segmentos_paralelo
+    from transcriptor import transcribir_clip_timestamps, procesar_segmentos_paralelo, GROQ_RATE_LIMIT_SENTINEL
     print(f"⏱️ [+{_time.time()-_t0:.1f}s] transcriptor OK")
 
     print(f"⏱️ [+{_time.time()-_t0:.1f}s] Importando camara...")
@@ -230,8 +230,12 @@ def procesar_podcast(
     # max_workers=1: secuencial para no saturar el rate limit de Groq
     resultados = procesar_segmentos_paralelo(segmentos_audio, duracion_total, max_workers=1)
 
-    guion_ganador = []
+    guion_ganador     = []
+    rate_limit_fallos = 0
     for start, ganchos_txt in resultados:
+        if ganchos_txt == GROQ_RATE_LIMIT_SENTINEL:
+            rate_limit_fallos += 1
+            continue
         clips = _extraer_json(ganchos_txt)
         for clip in clips:
             try:
@@ -251,6 +255,14 @@ def procesar_podcast(
 
     if not guion_ganador:
         video.close()
+        if rate_limit_fallos > 0:
+            raise ValueError(
+                f"El servicio de análisis está saturado "
+                f"({rate_limit_fallos}/{len(resultados)} segmentos fallaron por rate limit). "
+                f"Espera 2-3 minutos e intenta de nuevo. / "
+                f"Analysis service is busy ({rate_limit_fallos}/{len(resultados)} segments failed). "
+                f"Wait 2-3 min and try again."
+            )
         raise ValueError("KLYPO no encontro clips virales en el video")
 
     # ── 3. Deduplicacion (>50 % de overlap) ──────────────────────────────────────

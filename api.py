@@ -345,6 +345,50 @@ def generar(req: SolicitudClip, authorization: str | None = Header(default=None)
     }
 
 
+def _restaurar_credito_job(job_id: str, job: dict, motivo: str = "") -> None:
+    """
+    Restaura el crédito de un job fallido.
+    Idempotente: la columna credito_devuelto en Supabase evita restauraciones dobles
+    aunque /estado se llame 20 veces seguidas (polling del frontend).
+    Se usa tanto en FAILED/CANCELLED/TIMED_OUT como en COMPLETED con 0 clips.
+    """
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        return
+    if job.get("credito_devuelto"):
+        return  # ya restaurado en esta sesión
+
+    uid = job.get("user_id")
+    if not uid:
+        # Render restart o job reconstruido: recuperar user_id + flag desde Supabase
+        try:
+            r = _req.get(
+                f"{SUPABASE_URL}/rest/v1/proyectos"
+                f"?job_id=eq.{job_id}&select=user_id,credito_devuelto",
+                headers={"Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+                         "apikey": SUPABASE_SERVICE_KEY},
+                timeout=8,
+            )
+            if r.ok and r.json():
+                row = r.json()[0]
+                uid = row.get("user_id")
+                if row.get("credito_devuelto"):
+                    uid = None  # ya restaurado en una llamada anterior
+        except Exception as e:
+            print(f"⚠️  No se pudo leer proyecto para restaurar crédito: {e}", flush=True)
+
+    if uid:
+        if CREDITOS_ACTIVOS:
+            try:
+                _supabase_rpc("restaurar_credito", {"p_user_id": uid})
+                _supabase_patch("proyectos", {"job_id": job_id}, {"credito_devuelto": True})
+                print(f"💳 Crédito restaurado por {motivo} (user {uid})", flush=True)
+            except Exception as e:
+                print(f"⚠️  No se pudo restaurar crédito: {e}", flush=True)
+        else:
+            print(f"💳 [DRY RUN] Restauraría crédito — {motivo} (user {uid})", flush=True)
+        job["credito_devuelto"] = True
+
+
 @app.get("/estado/{job_id}")
 def estado(job_id: str):
     """
@@ -532,6 +576,8 @@ def estado(job_id: str):
             job["estado"]   = "error"
             job["error"]    = error_msg or "No se generaron clips"
             job["progreso"] = f"❌ {job['error']}"
+            # [PASO 6b] COMPLETED con 0 clips = job fallido para el usuario → devolver crédito
+            _restaurar_credito_job(job_id, job, f"0 clips (job {job_id})")
 
     elif runpod_status in ("FAILED", "CANCELLED", "TIMED_OUT"):
         error_msg = (
@@ -543,37 +589,8 @@ def estado(job_id: str):
         job["error"]    = error_msg
         job["progreso"] = f"❌ {error_msg}"
 
-        # [PASO 6] Restaurar crédito si el job falló
-        if SUPABASE_URL and SUPABASE_SERVICE_KEY and not job.get("credito_devuelto"):
-            uid = job.get("user_id")
-            # Render restart: uid puede ser None — recuperarlo de proyectos
-            if not uid:
-                try:
-                    r = _req.get(
-                        f"{SUPABASE_URL}/rest/v1/proyectos"
-                        f"?job_id=eq.{job_id}&select=user_id,credito_devuelto",
-                        headers={"Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
-                                 "apikey": SUPABASE_SERVICE_KEY},
-                        timeout=8,
-                    )
-                    if r.ok and r.json():
-                        row = r.json()[0]
-                        uid = row.get("user_id")
-                        if row.get("credito_devuelto"):
-                            uid = None  # ya restaurado anteriormente
-                except Exception as e:
-                    print(f"⚠️  No se pudo leer proyecto para restaurar crédito: {e}", flush=True)
-            if uid:
-                if CREDITOS_ACTIVOS:
-                    try:
-                        _supabase_rpc("restaurar_credito", {"p_user_id": uid})
-                        _supabase_patch("proyectos", {"job_id": job_id}, {"credito_devuelto": True})
-                        print(f"💳 Crédito restaurado (job {job_id}, user {uid})", flush=True)
-                    except Exception as e:
-                        print(f"⚠️  No se pudo restaurar crédito: {e}", flush=True)
-                else:
-                    print(f"💳 [DRY RUN] Restauraría crédito (job {job_id}, user {uid})", flush=True)
-                job["credito_devuelto"] = True
+        # [PASO 6] Restaurar crédito si el job falló en RunPod
+        _restaurar_credito_job(job_id, job, runpod_status)
 
     return job
 

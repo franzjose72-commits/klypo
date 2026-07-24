@@ -14,6 +14,10 @@ client_openai = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 # Groq sigue siendo el cliente para análisis de texto (Llama)
 client = client_groq
 
+# Sentinel que retorna buscar_ganchos_en_segmento cuando se agotan los reintentos
+# por rate limit, para que el caller distinga "rate limit" de "sin clips encontrados"
+GROQ_RATE_LIMIT_SENTINEL = "__GROQ_RATE_LIMIT__"
+
 def transcribir_segmento(archivo_segmento):
     # Intento 1: Groq Whisper — si hay rate limit, cae inmediatamente a OpenAI (sin esperar)
     try:
@@ -223,21 +227,38 @@ Responde ÚNICAMENTE con JSON válido, sin texto extra:
   {"inicio": 120, "fin": 210, "titulo": "Otro momento que engancha"}
 ]
 """
-    for _ in range(3):
+    for intento in range(1, 6):   # 5 intentos máximo
         try:
             completion = client.chat.completions.create(
                 messages=[
                     {"role": "system", "content": prompt_sistema},
                     {"role": "user", "content": f"Segmento del segundo {offset_tiempo}:\n\n{transcripcion}"}
                 ],
-                model="llama-3.3-70b-versatile"
+                model="llama-3.3-70b-versatile",
+                max_tokens=1000,
             )
             return completion.choices[0].message.content
         except Exception as e:
             if '429' in str(e):
-                print(f"⏳ Rate limit Llama, esperando 20s...")
-                time.sleep(20)
+                espera = 60  # mínimo 1 ventana de rate-limit de Groq
+                try:
+                    resp = getattr(e, 'response', None)
+                    hdrs = dict(getattr(resp, 'headers', {}) or {})
+                    ra   = hdrs.get('retry-after') or hdrs.get('Retry-After') or ''
+                    if ra:
+                        if 'm' in ra:  # formato "1m30s"
+                            m, s = ra.lower().replace('s', '').split('m')
+                            espera = int(float(m)) * 60 + int(float(s or '0'))
+                        else:
+                            espera = int(float(ra))
+                        espera = max(espera + 2, 60)  # nunca menos de 60s
+                except Exception:
+                    pass
+                print(f"⏳ Rate limit Llama (intento {intento}/5), esperando {espera}s...")
+                if intento < 5:
+                    time.sleep(espera)
             else:
                 print(f"⚠️ Error buscando ganchos: {e}")
                 return "[]"
-    return "[]"
+    print(f"❌ Rate limit Groq agotado tras 5 intentos — segmento {offset_tiempo}s sin analizar")
+    return GROQ_RATE_LIMIT_SENTINEL
