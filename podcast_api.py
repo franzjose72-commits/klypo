@@ -189,7 +189,10 @@ def procesar_podcast(
     _t0 = _time.time()
 
     print(f"⏱️ [+{_time.time()-_t0:.1f}s] Importando transcriptor...")
-    from transcriptor import transcribir_clip_timestamps, procesar_segmentos_paralelo, GROQ_RATE_LIMIT_SENTINEL
+    from transcriptor import (
+        transcribir_clip_timestamps, procesar_segmentos_paralelo,
+        GROQ_RATE_LIMIT_SENTINEL, GROQ_DAILY_LIMIT_SENTINEL,
+    )
     print(f"⏱️ [+{_time.time()-_t0:.1f}s] transcriptor OK")
 
     print(f"⏱️ [+{_time.time()-_t0:.1f}s] Importando camara...")
@@ -230,9 +233,14 @@ def procesar_podcast(
     # max_workers=1: secuencial para no saturar el rate limit de Groq
     resultados = procesar_segmentos_paralelo(segmentos_audio, duracion_total, max_workers=1)
 
-    guion_ganador     = []
-    rate_limit_fallos = 0
+    guion_ganador      = []
+    rate_limit_fallos  = 0
+    daily_limit_hit    = False
     for start, ganchos_txt in resultados:
+        if ganchos_txt == GROQ_DAILY_LIMIT_SENTINEL:
+            daily_limit_hit   = True
+            rate_limit_fallos += 1
+            continue
         if ganchos_txt == GROQ_RATE_LIMIT_SENTINEL:
             rate_limit_fallos += 1
             continue
@@ -255,10 +263,17 @@ def procesar_podcast(
 
     if not guion_ganador:
         video.close()
+        if daily_limit_hit:
+            raise ValueError(
+                "El servicio de análisis alcanzó su límite horario/diario. "
+                "Vuelve a intentar en unas horas. / "
+                "The analysis service has reached its hourly/daily limit. "
+                "Please try again in a few hours."
+            )
         if rate_limit_fallos > 0:
             raise ValueError(
                 f"El servicio de análisis está saturado "
-                f"({rate_limit_fallos}/{len(resultados)} segmentos fallaron por rate limit). "
+                f"({rate_limit_fallos}/{len(resultados)} segmentos fallaron). "
                 f"Espera 2-3 minutos e intenta de nuevo. / "
                 f"Analysis service is busy ({rate_limit_fallos}/{len(resultados)} segments failed). "
                 f"Wait 2-3 min and try again."
