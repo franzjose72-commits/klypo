@@ -824,7 +824,7 @@ def ejecutar_nero():
             video.audio.subclipped(start, fin_segmento).write_audiofile(
                 temp_audio, bitrate="16k", logger=None
             )
-            texto = transcribir_segmento(temp_audio)
+            texto, _segs = transcribir_segmento(temp_audio)
             if texto:
                 res = buscar_ganchos_en_segmento(texto, start, duracion_total - 5)
                 clips = extraer_json_de_texto(res)

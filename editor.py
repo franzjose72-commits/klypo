@@ -51,11 +51,11 @@ def ejecutar_nero():
 
     guion_ganador = []
 
-    print("🧠 KLYPO analizando desde el minuto 2:30 (chunks de 10 min)...")
-    # Chunks de 10 min: la mitad de llamadas API → menos rate limits, mismo contexto útil
+    print("🧠 KLYPO analizando desde el minuto 2:30 (chunks de 6 min)...")
+    # Chunks de 6 min: ajustado al TPM del 8b (≤6K tokens por llamada)
     segmentos_audio = []
-    for start in range(150, int(duracion_total), 600):
-        fin_segmento = min(start + 600, duracion_total)
+    for start in range(150, int(duracion_total), 360):
+        fin_segmento = min(start + 360, duracion_total)
         temp_audio = f"temp_{start}.mp3"
         try:
             video.audio.subclipped(start, fin_segmento).write_audiofile(

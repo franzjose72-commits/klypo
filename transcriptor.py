@@ -24,22 +24,47 @@ GROQ_DAILY_LIMIT_SENTINEL = "__GROQ_DAILY_LIMIT__"
 _RETRY_AFTER_ABORT = 90
 
 def transcribir_segmento(archivo_segmento):
-    # Intento 1: Groq Whisper — si hay rate limit, cae inmediatamente a OpenAI (sin esperar)
+    """Devuelve (texto_con_timestamps, segs) donde segs=[{"start":float,"end":float}].
+    El texto tiene el formato '[t=Xs-Xs] oración' para que el modelo use timestamps exactos."""
+
+    def _parsear_verbose(resp):
+        segs_raw = (resp.get("segments") if isinstance(resp, dict)
+                    else getattr(resp, "segments", None)) or []
+        segs, lineas = [], []
+        for s in segs_raw:
+            if isinstance(s, dict):
+                t0  = float(s.get("start", 0))
+                t1  = float(s.get("end", 0))
+                txt = s.get("text", "").strip()
+            else:
+                t0  = float(s.start)
+                t1  = float(s.end)
+                txt = s.text.strip()
+            if txt:
+                lineas.append(f"[{int(t0)}s] {txt}")
+                segs.append({"start": t0, "end": t1})
+        return "\n".join(lineas), segs
+
+    # Intento 1: Groq Whisper con timestamps de segmento
     try:
         print(f"   🎙️ Transcribiendo con Groq Whisper...")
         with open(archivo_segmento, "rb") as file:
-            return client_groq.audio.transcriptions.create(
+            resp = client_groq.audio.transcriptions.create(
                 file=(archivo_segmento, file.read()),
                 model="whisper-large-v3",
-                response_format="text"
+                response_format="verbose_json",
+                timestamp_granularities=["segment"],
             )
+        texto, segs = _parsear_verbose(resp)
+        if texto:
+            return texto, segs
     except Exception as e:
         if '429' in str(e):
             print(f"⚡ Rate limit Groq → OpenAI Whisper inmediato")
         else:
             print(f"⚠️ Groq Whisper falló: {e} — usando OpenAI como fallback")
 
-    # Fallback: OpenAI Whisper
+    # Fallback: OpenAI Whisper con timestamps de segmento
     for _ in range(3):
         try:
             print(f"   🎙️ Transcribiendo con OpenAI Whisper (fallback)...")
@@ -47,17 +72,19 @@ def transcribir_segmento(archivo_segmento):
                 response = client_openai.audio.transcriptions.create(
                     model="whisper-1",
                     file=f,
-                    response_format="text"
+                    response_format="verbose_json",
+                    timestamp_granularities=["segment"],
                 )
-            return response
+            texto, segs = _parsear_verbose(response)
+            return texto, segs
         except Exception as e:
             if '429' in str(e) or 'rate' in str(e).lower():
                 print(f"⏳ Rate limit OpenAI, esperando 30s...")
                 time.sleep(30)
             else:
                 print(f"⚠️ Error OpenAI Whisper: {e}")
-                return ""
-    return ""
+                return "", []
+    return "", []
 
 def transcribir_clip_timestamps(audio_path):
     # Intento 1: Groq Whisper con timestamps — si hay rate limit, OpenAI inmediato
@@ -129,6 +156,59 @@ def transcribir_clip_timestamps(audio_path):
                 return []
     return []
 
+_ENCAJE_MAX_MOV = 15   # máx segundos que puede moverse un corte al encajar
+
+def _encajar_clips_json(ganchos_txt, segs):
+    """Encaja inicio/fin de cada clip al límite de segmento Whisper más cercano.
+    Solo aplica si el movimiento es ≤15s y el resultado cumple 30≤dur≤110s."""
+    import re, json as _json
+    if not segs or ganchos_txt in (GROQ_RATE_LIMIT_SENTINEL, GROQ_DAILY_LIMIT_SENTINEL):
+        return ganchos_txt
+    match = re.search(r'\[.*\]', ganchos_txt, re.DOTALL)
+    if not match:
+        return ganchos_txt
+    try:
+        clips = _json.loads(match.group())
+    except Exception:
+        return ganchos_txt
+    if not clips:
+        return ganchos_txt
+
+    def _snap_ini(t):
+        best = t
+        for seg in segs:
+            if seg['start'] <= t:
+                best = seg['start']
+            else:
+                break
+        return best if abs(best - t) <= _ENCAJE_MAX_MOV else t
+
+    def _snap_fin(t):
+        for seg in segs:
+            if seg['end'] >= t:
+                return seg['end'] if abs(seg['end'] - t) <= _ENCAJE_MAX_MOV else t
+        last = segs[-1]['end']
+        return last if abs(last - t) <= _ENCAJE_MAX_MOV else t
+
+    encajados = []
+    for idx, clip in enumerate(clips):
+        try:
+            ini = float(clip['inicio'])
+            fin = float(clip['fin'])
+            ini_new = _snap_ini(ini)
+            fin_new = _snap_fin(fin)
+            dur_new = fin_new - ini_new
+            if 30 <= dur_new <= 110:
+                if abs(ini_new - ini) > 0.5 or abs(fin_new - fin) > 0.5:
+                    print(f"   📐 Encaje clip {idx+1}: {ini:.1f}s-{fin:.1f}s → {ini_new:.1f}s-{fin_new:.1f}s")
+                clip = {**clip, 'inicio': round(ini_new, 1), 'fin': round(fin_new, 1)}
+        except Exception:
+            pass
+        encajados.append(clip)
+
+    return _json.dumps(encajados, ensure_ascii=False)
+
+
 def procesar_segmentos_paralelo(segmentos, duracion_total, max_workers=1):
     """
     Transcribe + detecta ganchos. Con max_workers=1 (secuencial) el rate limit de Groq
@@ -137,11 +217,12 @@ def procesar_segmentos_paralelo(segmentos, duracion_total, max_workers=1):
     def _procesar_uno(item):
         start, audio_path = item
         print(f"   📝 Procesando segmento {start}s...")
-        texto = transcribir_segmento(audio_path)
+        texto, segs = transcribir_segmento(audio_path)
         if not texto:
             print(f"   ⚠️ Segmento {start}s: transcripción vacía, saltando.")
             return (start, "[]")
         ganchos = buscar_ganchos_en_segmento(texto, start, duracion_total - 5)
+        ganchos = _encajar_clips_json(ganchos, segs)
         print(f"   ✅ Segmento {start}s listo.")
         return (start, ganchos)
 
@@ -171,7 +252,7 @@ Cuando el orador cambia de tema, cortar ahí. El clip trata exactamente UNA idea
 El clip termina en el remate: afirmación rotunda, moraleja, dato final. NUNCA incluyas el inicio del siguiente tema.
 
 ESTRUCTURA: [GANCHO 3-8s] — [DESARROLLO min 15s] — [REMATE con punch]
-DURACIÓN: 30-110s exactos. Tiempos RELATIVOS al inicio del segmento (empiezan en 0). NUNCA repitas el mismo rango.
+DURACIÓN: 30-110s exactos. El texto tiene marcas [Xs] con el segundo exacto de inicio de cada oración — usa SOLO esos valores como 'inicio', elige el [Xs] de la última oración del clip como 'fin'. No estimes. NUNCA repitas el mismo rango.
 CANTIDAD: 3-5 clips. Si solo hay 2 momentos completos, devuelve 2. No rellenes con clips mediocres.
 TÍTULOS: referencia algo CONCRETO del clip (dato, cifra, frase real, anécdota). PROHIBIDO títulos genéricos. Max 60 chars.
 
@@ -185,7 +266,7 @@ Responde ÚNICAMENTE con JSON válido, sin texto extra:
                     {"role": "system", "content": prompt_sistema},
                     {"role": "user", "content": f"Segmento del segundo {offset_tiempo}:\n\n{transcripcion}"}
                 ],
-                model="llama-3.3-70b-versatile",
+                model="llama-3.1-8b-instant",
                 max_tokens=1000,
             )
             return completion.choices[0].message.content

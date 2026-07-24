@@ -217,10 +217,10 @@ def procesar_podcast(
 
     # ── 2. Extraccion de audio por chunks de 10 min ───────────────────────────────
     # Comienza en el segundo 150 (min 2:30) para saltar la intro editada
-    print("🧠 Analizando desde el min 2:30 (chunks de 10 min)...")
+    print("🧠 Analizando desde el min 2:30 (chunks de 6 min)...")
     segmentos_audio = []
-    for start in range(150, int(duracion_total), 600):
-        fin_segmento = min(start + 600, duracion_total)
+    for start in range(150, int(duracion_total), 360):
+        fin_segmento = min(start + 360, duracion_total)
         temp_audio = f"temp_podcast_{start}.mp3"
         try:
             video.audio.subclipped(start, fin_segmento).write_audiofile(
