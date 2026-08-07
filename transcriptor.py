@@ -198,7 +198,7 @@ def _encajar_clips_json(ganchos_txt, segs):
             ini_new = _snap_ini(ini)
             fin_new = _snap_fin(fin)
             dur_new = fin_new - ini_new
-            if 30 <= dur_new <= 110:
+            if 30 <= dur_new <= 60:
                 if abs(ini_new - ini) > 0.5 or abs(fin_new - fin) > 0.5:
                     print(f"   📐 Encaje clip {idx+1}: {ini:.1f}s-{fin:.1f}s → {ini_new:.1f}s-{fin_new:.1f}s")
                 clip = {**clip, 'inicio': round(ini_new, 1), 'fin': round(fin_new, 1)}
@@ -252,7 +252,7 @@ Cuando el orador cambia de tema, cortar ahí. El clip trata exactamente UNA idea
 El clip termina en el remate: afirmación rotunda, moraleja, dato final. NUNCA incluyas el inicio del siguiente tema.
 
 ESTRUCTURA: [GANCHO 3-8s] — [DESARROLLO min 15s] — [REMATE con punch]
-DURACIÓN: 30-110s exactos. El texto tiene marcas [Xs] con el segundo exacto de inicio de cada oración — usa SOLO esos valores como 'inicio', elige el [Xs] de la última oración del clip como 'fin'. No estimes. NUNCA repitas el mismo rango.
+DURACIÓN: 30-60s exactos. El texto tiene marcas [Xs] con el segundo exacto de inicio de cada oración — usa SOLO esos valores como 'inicio', elige el [Xs] de la última oración del clip como 'fin'. No estimes. NUNCA repitas el mismo rango.
 CANTIDAD: 3-5 clips. Si solo hay 2 momentos completos, devuelve 2. No rellenes con clips mediocres.
 TÍTULOS: referencia algo CONCRETO del clip (dato, cifra, frase real, anécdota). PROHIBIDO títulos genéricos. Max 60 chars.
 

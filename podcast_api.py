@@ -309,8 +309,8 @@ def procesar_podcast(
             fin      = float(info['fin'])
             duracion = fin - inicio
 
-            if duracion < 30 or duracion > 110:
-                print(f"⏭️ Clip {i+1} saltado ({duracion:.0f}s fuera de rango 30-110s)")
+            if duracion < 30 or duracion > 60:
+                print(f"⏭️ Clip {i+1} saltado ({duracion:.0f}s fuera de rango 30-60s)")
                 continue
 
             inicio = max(150, inicio)
